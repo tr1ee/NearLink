@@ -1014,6 +1014,9 @@ input:not([type="range"]) {
 .remote-video.remote-cursor-only {
   cursor: none;
 }
+.remote-video.local-cursor {
+  cursor: default;
+}
 .session-viewport {
   position: absolute;
   inset: 0;

@@ -26,6 +26,7 @@ const mouseButtonMask = [1, 4, 2]; // DOM order: left, middle, right.
 export default function Session() {
   const [isFullscreen, setIsFullscreen] = useState(true);
   const [pixelMode, setPixelMode] = useState(false);
+  const [localCursor, setLocalCursor] = useState(false);
   const [videoSize, setVideoSize] = useState({ width: 0, height: 0 });
   const { state } = useSnapshot();
   const video = useRef<HTMLVideoElement>(null);
@@ -404,7 +405,7 @@ export default function Session() {
             autoPlay
             playsInline
             draggable={false}
-            className="remote-video"
+            className={"remote-video" + (localCursor ? " local-cursor" : "")}
             style={
               pixelMode && videoSize.width
                 ? {
@@ -690,6 +691,19 @@ export default function Session() {
               <p className="fine-print">
                 当前接收 {videoSize.width || "—"} × {videoSize.height || "—"}
                 。原生清晰保持源屏分辨率（最高4K），网络不足时可切回自动流畅。
+              </p>
+              <label className="setting-field">
+                鼠标指针
+                <select
+                  value={localCursor ? "local" : "remote"}
+                  onChange={(e) => setLocalCursor(e.target.value === "local")}
+                >
+                  <option value="remote">画面中的远端指针</option>
+                  <option value="local">显示本机指针</option>
+                </select>
+              </label>
+              <p className="fine-print">
+                若画面中看不到鼠标，可显示本机指针。它表示本机指向位置，不代表对端已完成操作。
               </p>
               <label className="setting-field">
                 分辨率上限

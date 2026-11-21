@@ -3,18 +3,28 @@
 #include <cwchar>
 #include <map>
 #include <string_view>
+#ifndef NEARLINK_STANDALONE_INPUT
 #include "win_napi_bridge.h"
 #include "common.h"
+#endif
+#include <set>
+#include <vector>
+#include <string>
+#include "windows-input-command.h"
 #include "windows-mouse.h"
 static std::set<WORD> heldKeys;
 static std::map<std::string,WORD> keyMap={{"Enter",VK_RETURN},{"Tab",VK_TAB},{"Space",VK_SPACE},{"Backspace",VK_BACK},{"Escape",VK_ESCAPE},{"Delete",VK_DELETE},{"Insert",VK_INSERT},{"Home",VK_HOME},{"End",VK_END},{"PageUp",VK_PRIOR},{"PageDown",VK_NEXT},{"ArrowLeft",VK_LEFT},{"ArrowRight",VK_RIGHT},{"ArrowUp",VK_UP},{"ArrowDown",VK_DOWN},{"ControlLeft",VK_LCONTROL},{"ControlRight",VK_RCONTROL},{"ShiftLeft",VK_LSHIFT},{"ShiftRight",VK_RSHIFT},{"AltLeft",VK_LMENU},{"AltRight",VK_RMENU},{"MetaLeft",VK_LWIN},{"MetaRight",VK_RWIN},{"CapsLock",VK_CAPITAL},{"Minus",VK_OEM_MINUS},{"Equal",VK_OEM_PLUS},{"BracketLeft",VK_OEM_4},{"BracketRight",VK_OEM_6},{"Backslash",VK_OEM_5},{"Semicolon",VK_OEM_1},{"Quote",VK_OEM_7},{"Backquote",VK_OEM_3},{"Comma",VK_OEM_COMMA},{"Period",VK_OEM_PERIOD},{"Slash",VK_OEM_2},{"NumpadEnter",VK_RETURN},{"NumpadAdd",VK_ADD},{"NumpadSubtract",VK_SUBTRACT},{"NumpadMultiply",VK_MULTIPLY},{"NumpadDivide",VK_DIVIDE},{"NumpadDecimal",VK_DECIMAL}};
-static bool send(INPUT&i){return SendInput(1,&i,sizeof(i))==1;}
+static uint32_t lastNativeRequested=0,lastNativeQueued=0,lastNativeError=0;
+static bool send(INPUT&i){SetLastError(0);lastNativeRequested=1;lastNativeQueued=SendInput(1,&i,sizeof(i));lastNativeError=GetLastError();return lastNativeQueued==1;}
+#ifndef NEARLINK_STANDALONE_INPUT
 static napi_value inputOutcome(napi_env env, const char* result) {
   napi_value value;
   if (napi_create_string_utf8(env, result, NAPI_AUTO_LENGTH, &value) != napi_ok)
     return JSBool(env, false);
   return value;
 }
+#endif
+
 enum class MouseTargetKind { unavailable, other, primary, secondary, overflow, xamlOverflow };
 
 static MouseTargetKind classifyRoot(HWND root) {
@@ -109,6 +119,7 @@ static const char* captureStatus(DWORD thread, const MouseTarget& target) {
   return "other-window";
 }
 
+#ifndef NEARLINK_STANDALONE_INPUT
 static void setString(napi_env env, napi_value object, const char* key, const char* text) {
   napi_value value;
   if (napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &value) == napi_ok)
@@ -171,6 +182,7 @@ static napi_value TakeMouseDiagnostics(napi_env env, napi_callback_info) {
   }
   return array;
 }
+#endif
 static bool key(WORD k, bool down) {
   INPUT input{};
   input.type = INPUT_KEYBOARD;
@@ -209,7 +221,9 @@ static std::size_t sendMouse(std::initializer_list<MouseStroke> strokes) {
       input.mi.dwFlags = stroke.action == MouseAction::down ? press[stroke.button] : lift[stroke.button];
     }
   }
-  return SendInput(static_cast<UINT>(index), batch.data(), sizeof(INPUT));
+  SetLastError(0);lastNativeRequested=static_cast<UINT>(index);
+  lastNativeQueued=SendInput(lastNativeRequested,batch.data(),sizeof(INPUT));
+  lastNativeError=GetLastError();return lastNativeQueued;
 }
 static bool release() {
   auto keys = heldKeys;
@@ -217,18 +231,19 @@ static bool release() {
   const bool mouseReleased = mouse.release(sendMouse, GetTickCount64());
   return heldKeys.empty() && mouseReleased;
 }
-static napi_value Input(napi_env env,napi_callback_info info){size_t argc=1;napi_value a[1];napi_get_cb_info(env,info,&argc,a,nullptr,nullptr);if(!argc)return JSBool(env,false);auto v=a[0];auto t=Str(env,v,"type");bool ok=true;
+static NativeInputOutcome applyNativeInput(const NativeInputCommand& command) {
+ const auto& t=command.type; bool ok=true;
  if(t=="release")ok=release();
  else if(t=="move"||t=="button"){
-   const MousePoint point{LONG(Num(env, v, "screenX")), LONG(Num(env, v, "screenY"))};
+   const MousePoint point{LONG(command.screenX), LONG(command.screenY)};
    const auto now = GetTickCount64();
    MouseResult result;
    if (t == "move") {
      result = mouse.move(point, now, sendMouse);
    } else {
-     const int b = int(Num(env, v, "button"));
-     if (b < 0 || b > 2) return JSBool(env, false);
-     const bool down = Bool(env, v, "down");
+     const int b = int(command.button);
+     if (b < 0 || b > 2) return NativeInputOutcome::rejected;
+     const bool down = command.down;
      POINT cursor{};
      const bool atPoint = GetCursorPos(&cursor) && cursor.x == point.x && cursor.y == point.y;
      std::optional<MousePoint> threshold;
@@ -240,31 +255,66 @@ static napi_value Input(napi_env env,napi_callback_info info){size_t argc=1;napi
      result = mouse.button(b, down, point, atPoint, threshold, now, sendMouse);
    }
    switch (result) {
-     case MouseResult::applied: return JSBool(env, true);
-     case MouseResult::rejected: return JSBool(env, false);
-     case MouseResult::alreadyUp: return inputOutcome(env, "already-up");
-     case MouseResult::deferredPress: return inputOutcome(env, "deferred-press");
-     case MouseResult::suppressedMove: return inputOutcome(env, "suppressed-move");
-     case MouseResult::trayClick: return inputOutcome(env, "tray-click");
-     case MouseResult::trayDragStart: return inputOutcome(env, "tray-drag-start");
+     case MouseResult::applied: return NativeInputOutcome::applied;
+     case MouseResult::rejected: return NativeInputOutcome::rejected;
+     case MouseResult::alreadyUp: return NativeInputOutcome::alreadyUp;
+     case MouseResult::deferredPress: return NativeInputOutcome::deferredPress;
+     case MouseResult::suppressedMove: return NativeInputOutcome::suppressedMove;
+     case MouseResult::trayClick: return NativeInputOutcome::trayClick;
+     case MouseResult::trayDragStart: return NativeInputOutcome::trayDragStart;
    }
  }
- else if(t=="wheel"){for(auto axis:{std::pair<const char*,DWORD>{"dy",MOUSEEVENTF_WHEEL},{"dx",MOUSEEVENTF_HWHEEL}}){double d=Num(env,v,axis.first);if(d){INPUT i={};i.type=INPUT_MOUSE;i.mi.dwFlags=axis.second;i.mi.mouseData=(DWORD)(LONG)(axis.second==MOUSEEVENTF_WHEEL?-d:d);ok=send(i)&&ok;}}}
- else if(t=="key"){auto code=Str(env,v,"code");auto it=keyMap.find(code);if(it==keyMap.end())return JSBool(env,false);ok=key(it->second,Bool(env,v,"down"));}
- else if(t=="text"){auto text=Str(env,v,"text");int n=MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),nullptr,0);std::vector<WCHAR>w(n);MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),w.data(),n);for(WCHAR c:w)for(bool down:{true,false}){INPUT i={};i.type=INPUT_KEYBOARD;i.ki.wScan=c;i.ki.dwFlags=KEYEVENTF_UNICODE|(down?0:KEYEVENTF_KEYUP);ok=send(i)&&ok;}}
+ else if(t=="wheel"){for(auto axis:{std::pair<const char*,DWORD>{"dy",MOUSEEVENTF_WHEEL},{"dx",MOUSEEVENTF_HWHEEL}}){double d=(std::string_view(axis.first)=="dy"?command.dy:command.dx);if(d){INPUT i={};i.type=INPUT_MOUSE;i.mi.dwFlags=axis.second;i.mi.mouseData=(DWORD)(LONG)(axis.second==MOUSEEVENTF_WHEEL?-d:d);ok=send(i)&&ok;}}}
+ else if(t=="key"){auto code=command.code;auto it=keyMap.find(code);if(it==keyMap.end())return NativeInputOutcome::rejected;ok=key(it->second,command.down);}
+ else if(t=="text"){auto text=command.text;int n=MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),nullptr,0);std::vector<WCHAR>w(n);MultiByteToWideChar(CP_UTF8,0,text.data(),(int)text.size(),w.data(),n);for(WCHAR c:w)for(bool down:{true,false}){INPUT i={};i.type=INPUT_KEYBOARD;i.ki.wScan=c;i.ki.dwFlags=KEYEVENTF_UNICODE|(down?0:KEYEVENTF_KEYUP);ok=send(i)&&ok;}}
  else if(t=="paste"){release();ok=key(VK_CONTROL,true)&&key('V',true);key('V',false);key(VK_CONTROL,false);}
- else return JSBool(env,false);return JSBool(env,ok);
+ else return NativeInputOutcome::rejected;return ok ? NativeInputOutcome::applied : NativeInputOutcome::rejected;
 }
-static void Cleanup(void*){release();}
-static napi_value Init(napi_env env, napi_value exports) {
+#ifndef NEARLINK_STANDALONE_INPUT
+#include "windows-input-bridge.h"
+static napi_value Input(napi_env env, napi_callback_info info) {
+  size_t argc=1; napi_value args[1]; napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+  if(!argc) return JSBool(env,false);
+  NativeInputCommand command; auto v=args[0]; command.type=Str(env,v,"type");
+  if(command.type=="move"||command.type=="button") {command.screenX=LONG(Num(env,v,"screenX"));command.screenY=LONG(Num(env,v,"screenY"));}
+  if(command.type=="button") {command.button=int(Num(env,v,"button"));command.down=Bool(env,v,"down");}
+  if(command.type=="wheel") {command.dx=Num(env,v,"dx");command.dy=Num(env,v,"dy");}
+  if(command.type=="key") {command.code=Str(env,v,"code");command.down=Bool(env,v,"down");}
+  if(command.type=="text") command.text=Str(env,v,"text");
+  auto result=helperBridge.engaged() ? helperBridge.input(command) : applyNativeInput(command);
+  switch(result) {
+    case NativeInputOutcome::applied:return JSBool(env,true);
+    case NativeInputOutcome::alreadyUp:return inputOutcome(env,"already-up");
+    case NativeInputOutcome::deferredPress:return inputOutcome(env,"deferred-press");
+    case NativeInputOutcome::suppressedMove:return inputOutcome(env,"suppressed-move");
+    case NativeInputOutcome::trayClick:return inputOutcome(env,"tray-click");
+    case NativeInputOutcome::trayDragStart:return inputOutcome(env,"tray-drag-start");
+    default:return JSBool(env,false);
+  }
+}
+static void Cleanup(void*){if(helperStarting){helperBridge.cancel();return;}helperBridge.stop();release();}
+static void initKeys() {
   for (char c = 'A'; c <= 'Z'; ++c) keyMap[std::string("Key") + c] = c;
   for (char c = '0'; c <= '9'; ++c) {
     keyMap[std::string("Digit") + c] = c;
     keyMap[std::string("Numpad") + c] = VK_NUMPAD0 + c - '0';
   }
   for (int f = 1; f <= 12; ++f) keyMap["F" + std::to_string(f)] = VK_F1 + f - 1;
+}
+static napi_value Init(napi_env env, napi_value exports) {
+  initKeys();
   const napi_property_descriptor properties[] = {
     {"input", 0, Input, 0, 0, 0, napi_default, 0},
+    {"startInputHelper",0,StartInputHelper,0,0,0,napi_default,0},
+    {"configureInputHelper",0,ConfigureInputHelper,0,0,0,napi_default,0},
+    {"heartbeatInputHelper",0,HeartbeatInputHelper,0,0,0,napi_default,0},
+    {"stopInputHelper",0,StopInputHelper,0,0,0,napi_default,0},
+    {"cancelInputHelper",0,CancelInputHelper,0,0,0,napi_default,0},
+    {"inputHelperPid",0,InputHelperPid,0,0,0,napi_default,0},
+    {"inputHelperFailure",0,InputHelperFailure,0,0,0,napi_default,0},
+    {"watchInputOwner",0,WatchInputOwner,0,0,0,napi_default,0},
+    {"inputOwnerAlive",0,InputOwnerAlive,0,0,0,napi_default,0},
+    {"inputHelperDiagnostics",0,InputHelperDiagnostics,0,0,0,napi_default,0},
     {"takeMouseDiagnostics", 0, TakeMouseDiagnostics, 0, 0, 0, napi_default, 0},
   };
   napi_define_properties(env, exports, ARRAYSIZE(properties), properties);
@@ -272,3 +322,11 @@ static napi_value Init(napi_env env, napi_value exports) {
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME,Init)
+
+#else
+static void initKeys() {
+ for(char c='A';c<='Z';++c) keyMap[std::string("Key")+c]=c;
+ for(char c='0';c<='9';++c){keyMap[std::string("Digit")+c]=c;keyMap[std::string("Numpad")+c]=VK_NUMPAD0+c-'0';}
+ for(int f=1;f<=12;++f)keyMap["F"+std::to_string(f)]=VK_F1+f-1;
+}
+#endif

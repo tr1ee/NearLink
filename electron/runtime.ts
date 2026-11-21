@@ -28,6 +28,7 @@ import {
 } from "../src/shared/protocol";
 import { mapPoint } from "../src/shared/geometry";
 import { WindowsInputService } from "./windows-input";
+import { developmentInputHelper } from "./development-input-helper";
 export class Runtime extends EventEmitter {
   openBenchmark?: (
     display: DisplayInfo,
@@ -54,6 +55,7 @@ export class Runtime extends EventEmitter {
   private reconnectStarted = 0;
   private stopping = false;
   private seq = -1;
+  private inputConnections = new WeakMap<object, string>();
   private audioOwner: string | null = null;
   private lastInputWarning = 0;
   metrics: Metrics | null = null;
@@ -72,6 +74,8 @@ export class Runtime extends EventEmitter {
         this.inputService = new WindowsInputService(
           nativePath,
           (event, details) => this.emit("input-worker", event, details),
+          undefined,
+          developmentInputHelper(app.isPackaged, !!process.env.NEARLINK_USER_DATA),
         );
         await this.inputService.start();
       } else this.native = require(nativePath);
@@ -265,6 +269,7 @@ export class Runtime extends EventEmitter {
     });
     this.inputService.configure({
       sessionId: s.id,
+      authority: this.inputAuthority(s.id, s.peerId),
       allowed:
         !s.viewOnly &&
         !this.locked &&
@@ -277,6 +282,16 @@ export class Runtime extends EventEmitter {
         height: last.y - first.y + 1,
       },
     });
+  }
+  private inputAuthority(sessionId: string, peerId: string) {
+    const link = this.network.links.get(peerId);
+    if (!link?.ready) return undefined;
+    let generation = this.inputConnections.get(link.ws);
+    if (!generation) {
+      generation = randomUUID();
+      this.inputConnections.set(link.ws, generation);
+    }
+    return `${sessionId}:${peerId}:${generation}`;
   }
   checkPeerBusy(id: string) {
     if (this.locked) throw new Error("电脑已锁定，请在本机解锁后重试");
