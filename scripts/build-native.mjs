@@ -49,6 +49,11 @@ for (const arch of arches) {
       "native/windows.cc",
       "/link",
       "user32.lib",
+      "advapi32.lib",
+      "bcrypt.lib",
+      "shell32.lib",
+      "ole32.lib",
+      "wtsapi32.lib",
       `/OUT:${dir}/nearlink.node`,
     ];
   } else throw new Error("仅支持 Windows 和 macOS");

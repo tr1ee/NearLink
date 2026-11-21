@@ -769,6 +769,12 @@ async function initialize() {
           ...(await runtime.source()),
           captureBackend: useDxgi ? "dxgi" : "chromium",
         };
+      case "media.input-ready":
+        if (meta.kind !== "host" || runtime.session?.id !== args[0])
+          throw Error("远控会话已结束");
+        await runtime.inputService?.waitForAuthorization(String(args[0]));
+        if (runtime.session?.id !== args[0]) throw Error("远控会话已结束");
+        return true;
       case "capture.dxgi.open": {
         const current = runtime.session;
         if (

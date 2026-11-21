@@ -526,6 +526,10 @@ export class ChromiumMediaEngine implements MediaEngine {
       await pc.setRemoteDescription(signal.data);
       if (this.pc !== pc) return;
       this.trace("offer-description-ready");
+      // UAC temporarily switches away from the capture desktop. Starting WGC
+      // during local input approval would time out and revoke that same grant.
+      await window.nearlink.invoke("media.input-ready", this.info.id);
+      if (this.pc !== pc) return;
       const captured = await this.capture();
       if (this.pc !== pc) {
         for (const track of captured.getTracks()) track.stop();

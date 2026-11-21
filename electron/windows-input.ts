@@ -6,14 +6,20 @@ import {
 } from "electron";
 import path from "node:path";
 import type { InputScope } from "./input-state";
+import type { DevelopmentInputHelper } from "./development-input-helper";
 export class WindowsInputService {
   private child?: UtilityProcess;
   private scope: InputScope | null = null;
   ready = false;
+  private helper: { active: boolean; pid?: number; state?: string } = {
+    active: false,
+  };
+  private handledAuthority?: string;
   constructor(
     private nativePath: string,
     private report: (event: string, details?: any) => void = () => {},
     private entry = path.join(__dirname, "input-worker.cjs"),
+    private developmentHelper?: DevelopmentInputHelper,
   ) {}
   start() {
     return new Promise<void>((resolve, reject) => {
@@ -36,10 +42,12 @@ export class WindowsInputService {
       child.once("spawn", () =>
         child.postMessage({
           type: "init",
+          parentPid: process.pid,
           nativePath: this.nativePath.replace(
             /\.asar([\\/])/,
             ".asar.unpacked$1",
           ),
+          helper: this.developmentHelper,
         }),
       );
       child.on("message", (m) => {
@@ -52,7 +60,21 @@ export class WindowsInputService {
           clearTimeout(timer);
           child.kill();
           reject(Error(m.message));
-        } else if (m?.type === "mouse-diagnostics" && Array.isArray(m.samples)) {
+        } else if (m?.type === "helper-status") {
+          this.helper = {
+            active: m.active === true,
+            pid: m.pid,
+            state: m.state,
+          };
+          if (m.state !== "awaiting-local-approval")
+            this.handledAuthority = m.authority;
+          this.report("helper-status", this.helper);
+        } else if (m?.type === "helper-diagnostic") {
+          this.report("helper-diagnostic", m.sample);
+        } else if (
+          m?.type === "mouse-diagnostics" &&
+          Array.isArray(m.samples)
+        ) {
           for (const sample of m.samples) this.report("mouse-gesture", sample);
         }
       });
@@ -80,7 +102,21 @@ export class WindowsInputService {
     if (this.ready) this.child?.postMessage({ type: "release" });
   }
   status() {
-    return { ready: this.ready, pid: this.child?.pid };
+    return { ready: this.ready, pid: this.child?.pid, helper: this.helper };
+  }
+  async waitForAuthorization(sessionId: string) {
+    const deadline = Date.now() + 180000;
+    while (
+      this.developmentHelper &&
+      this.scope?.allowed &&
+      this.scope.sessionId === sessionId &&
+      this.scope.authority &&
+      this.handledAuthority !== this.scope.authority
+    ) {
+      if (!this.ready || Date.now() >= deadline)
+        throw Error("本机输入授权尚未完成，请在 Windows 本机处理授权。");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
   async stop() {
     this.configure(null);

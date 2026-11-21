@@ -6,6 +6,7 @@ import {
 export type InputScope = {
   sessionId: string;
   allowed: boolean;
+  authority?: string;
   display: { x: number; y: number; width: number; height: number };
 };
 export class InputState {
@@ -33,8 +34,11 @@ export class InputState {
     this.refreshedAt = Date.now();
   }
   heartbeat(sessionId: string, now = Date.now()) {
-    if (this.scope?.sessionId === sessionId && this.scope.allowed)
+    if (this.scope?.sessionId === sessionId && this.scope.allowed) {
       this.refreshedAt = now;
+      return true;
+    }
+    return false;
   }
   expire(now = Date.now()) {
     if (this.scope && this.refreshedAt && now - this.refreshedAt > 4000) {
@@ -47,7 +51,9 @@ export class InputState {
     return !this.needsRelease;
   }
   stop(sessionId: string) {
-    if (this.scope?.sessionId === sessionId) this.configure(null);
+    if (this.scope?.sessionId !== sessionId) return false;
+    this.configure(null);
+    return true;
   }
   apply(sessionId: string, data: unknown) {
     const result = this.applyResult(sessionId, data);

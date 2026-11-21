@@ -29,4 +29,9 @@ NL_NAPI(napi_set_named_property,(napi_env e,napi_value o,const char*k,napi_value
 NL_NAPI(napi_get_cb_info,(napi_env e,napi_callback_info i,size_t*c,napi_value*a,napi_value*t,void**d),(e,i,c,a,t,d))
 NL_NAPI(napi_define_properties,(napi_env e,napi_value o,size_t c,const napi_property_descriptor*p),(e,o,c,p))
 NL_NAPI(napi_add_env_cleanup_hook,(napi_env e,napi_cleanup_hook h,void*d),(e,h,d))
+NL_NAPI(napi_create_promise,(napi_env e,napi_deferred*d,napi_value*p),(e,d,p))
+NL_NAPI(napi_create_async_work,(napi_env e,napi_value r,napi_value n,napi_async_execute_callback x,napi_async_complete_callback c,void*d,napi_async_work*w),(e,r,n,x,c,d,w))
+NL_NAPI(napi_queue_async_work,(napi_env e,napi_async_work w),(e,w))
+NL_NAPI(napi_delete_async_work,(napi_env e,napi_async_work w),(e,w))
+NL_NAPI(napi_resolve_deferred,(napi_env e,napi_deferred d,napi_value v),(e,d,v))
 #undef NL_NAPI
