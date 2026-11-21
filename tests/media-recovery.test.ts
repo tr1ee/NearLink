@@ -3,6 +3,21 @@ import assert from "node:assert/strict";
 import { captureTask } from "../src/media/capture-task";
 import { DiscoveryLeases } from "../electron/discovery-leases";
 import { runtimeNetworkOptions } from "../electron/network-options";
+import { isMediaStage } from "../src/shared/media-diagnostics";
+
+test("媒体阶段诊断只接受固定标签，不接受地址、SDP 或任意对象", () => {
+  assert.equal(isMediaStage("source-ready"), true);
+  assert.equal(isMediaStage("connection-connected"), true);
+  for (const payload of [
+    null,
+    { stage: "source-ready", sdp: "synthetic private payload" },
+    "source-ready 192.0.2.1",
+    "offer-received\nv=0",
+    "",
+    1,
+  ])
+    assert.equal(isMediaStage(payload), false);
+});
 test("开发测试身份只监听回环且不广播，正式应用仍发现局域网", () => {
   assert.deepEqual(runtimeNetworkOptions("/test", false, true), {
     stateDirectory: "/test",

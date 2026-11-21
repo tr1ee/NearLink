@@ -224,6 +224,9 @@ test("UI主线程停止调度时，生产预加载直连真实Utility进程仍�
       ),
     );
   } finally {
+    // Windows keeps an unapproved normal quit in the tray. This isolated test
+    // must terminate its instance even when an assertion fails before cleanup.
+    await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
     await app.close();
   }
 });

@@ -157,6 +157,8 @@ export class Runtime extends EventEmitter {
             this.changed();
           }
           if (payload.kind === "stats") this.remoteStats(payload.data);
+          if (payload.kind === "offer" || payload.kind === "answer")
+            this.emit("media-signal-received", payload.kind);
           this.emit(
             "media",
             this.session.role === "host" ? "host" : "remote",
