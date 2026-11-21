@@ -8,7 +8,10 @@ import type { IdentityStore } from "./identity";
 
 const run = promisify(execFile);
 const { readdir, lstat, readFile, mkdir, writeFile } = updateDisk;
-export async function prepareDesktopServiceInstall(store: IdentityStore) {
+export async function prepareDesktopServiceInstall(
+  store: IdentityStore,
+  profile = app.getPath("userData"),
+) {
   if (process.platform !== "win32") throw Error("仅支持 Windows");
   const peers = [...store.trusted.keys()];
   if (!peers.length) throw Error("请先核对指纹并配对需要无人值守的控制端。");
@@ -67,7 +70,7 @@ export async function prepareDesktopServiceInstall(store: IdentityStore) {
   );
   const userSid = /S-1-5-[0-9-]+/.exec(who.stdout)?.[0];
   if (!userSid) throw Error("无法核对本机用户");
-  const directory = path.join(app.getPath("userData"), "service-install");
+  const directory = path.join(profile, "service-install");
   await mkdir(directory, { recursive: true });
   const request = path.join(directory, "request.json");
   const bytes = Buffer.from(
@@ -76,7 +79,7 @@ export async function prepareDesktopServiceInstall(store: IdentityStore) {
       userSid,
       host: store.identity.fingerprint,
       peers,
-      profile: app.getPath("userData"),
+      profile,
       files,
     }),
   );

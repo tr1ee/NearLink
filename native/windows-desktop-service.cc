@@ -9,10 +9,13 @@
 #include <tlhelp32.h>
 
 namespace desktopservice {
+std::wstring windowsDirectory(){wchar_t path[MAX_PATH]{};return GetWindowsDirectoryW(path,ARRAYSIZE(path))?path:L"";}
+std::wstring systemDirectory(){wchar_t path[MAX_PATH]{};return GetSystemDirectoryW(path,ARRAYSIZE(path))?path:L"";}
 SERVICE_STATUS_HANDLE statusHandle=nullptr;
 SERVICE_STATUS status{};
 inputsecurity::Handle stopEvent;
 inputsecurity::Handle clientApp;
+inputsecurity::Handle clientJob;
 std::wstring imagePath,root,userSid;
 std::wstring profile;
 std::string hostFingerprint,clientDigest;
@@ -117,9 +120,10 @@ struct Agent {
       std::to_wstring(inputsecurity::creationTime(GetCurrentProcess()))+L" "+inputsecurity::widen(nonce)+L" \""+mappingName+L"\"";
     STARTUPINFOW startup{sizeof(startup)};wchar_t desktop[]=L"WinSta0\\Default";startup.lpDesktop=desktop;
     PROCESS_INFORMATION spawned{};
-    const wchar_t environment[]=L"SystemRoot=C:\\Windows\0PATH=C:\\Windows\\System32\0\0";
+    std::wstring environment=L"SystemRoot="+windowsDirectory();environment.push_back(0);
+    environment+=L"PATH="+systemDirectory();environment.push_back(0);environment.push_back(0);
     if(!CreateProcessAsUserW(primary,imagePath.c_str(),command.data(),nullptr,nullptr,FALSE,
-      CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,const_cast<wchar_t*>(environment),root.c_str(),&startup,&spawned))return false;
+      CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment.data(),root.c_str(),&startup,&spawned))return false;
     process.reset(spawned.hProcess);inputsecurity::Handle thread(spawned.hThread);
     job.reset(CreateJobObjectW(nullptr,nullptr));JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -157,6 +161,7 @@ bool clientAllowed(HANDLE pipe,DWORD& session,inputsecurity::Handle& process) {
 }
 void startClient() {
   if(clientApp&&WaitForSingleObject(clientApp.value,0)==WAIT_TIMEOUT)return;
+  clientJob.reset();clientApp.reset();
   const DWORD session=WTSGetActiveConsoleSessionId();if(!session||session==0xffffffff)return;
   HANDLE raw=nullptr;if(!WTSQueryUserToken(session,&raw))return;inputsecurity::Handle token(raw);
   DWORD size=0;GetTokenInformation(raw,TokenUser,nullptr,0,&size);std::vector<BYTE> info(size);
@@ -167,12 +172,13 @@ void startClient() {
   for(auto p=static_cast<const wchar_t*>(environmentRaw);*p;p+=wcslen(p)+1) {
     std::wstring variable=p;auto key=variable.substr(0,variable.find(L'='));
     for(auto& c:key)c=towupper(c);
-    const std::vector<std::wstring> allowed={L"SYSTEMROOT",L"WINDIR",L"LOCALAPPDATA",L"APPDATA",L"USERPROFILE",L"TEMP",L"TMP",L"SYSTEMDRIVE",L"USERNAME",L"USERDOMAIN",L"COMPUTERNAME"};
+    const std::vector<std::wstring> allowed={L"LOCALAPPDATA",L"APPDATA",L"USERPROFILE",L"TEMP",L"TMP",L"SYSTEMDRIVE",L"USERNAME",L"USERDOMAIN",L"COMPUTERNAME"};
     if(std::find(allowed.begin(),allowed.end(),key)!=allowed.end()){environment.insert(environment.end(),variable.begin(),variable.end());environment.push_back(0);}
   }
   DestroyEnvironmentBlock(environmentRaw);
-  for(const auto& value:{L"PATH=C:\\Windows\\System32",L"NEARLINK_INSTALLED_SERVICE=1",L"NEARLINK_DEV_LAN=1",L"NEARLINK_DEV_ADMIN_INPUT=0"}) {
-    environment.insert(environment.end(),value,value+wcslen(value));environment.push_back(0);
+  const std::vector<std::wstring> fixed={L"PATH="+systemDirectory(),L"SYSTEMROOT="+windowsDirectory(),L"WINDIR="+windowsDirectory(),L"NEARLINK_INSTALLED_SERVICE=1",L"NEARLINK_DEV_LAN=1",L"NEARLINK_DEV_ADMIN_INPUT=0"};
+  for(const auto& value:fixed) {
+    environment.insert(environment.end(),value.begin(),value.end());environment.push_back(0);
   }
   const auto data=L"NEARLINK_USER_DATA="+profile;environment.insert(environment.end(),data.begin(),data.end());environment.push_back(0);environment.push_back(0);
   const auto executable=root+L"\\Client\\electron.exe";
@@ -180,8 +186,13 @@ void startClient() {
   STARTUPINFOW startup{sizeof(startup)};wchar_t desktop[]=L"WinSta0\\Default";startup.lpDesktop=desktop;
   PROCESS_INFORMATION spawned{};
   if(CreateProcessAsUserW(raw,executable.c_str(),command.data(),nullptr,nullptr,FALSE,
-      CREATE_UNICODE_ENVIRONMENT,environment.data(),root.c_str(),&startup,&spawned)) {
-    clientApp.reset(spawned.hProcess);CloseHandle(spawned.hThread);
+      CREATE_UNICODE_ENVIRONMENT|CREATE_SUSPENDED,environment.data(),root.c_str(),&startup,&spawned)) {
+    clientApp.reset(spawned.hProcess);inputsecurity::Handle thread(spawned.hThread);
+    clientJob.reset(CreateJobObjectW(nullptr,nullptr));JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if(!clientJob||!SetInformationJobObject(clientJob.value,JobObjectExtendedLimitInformation,&limits,sizeof(limits))||
+      !AssignProcessToJobObject(clientJob.value,clientApp.value)){TerminateProcess(clientApp.value,31);clientApp.reset();return;}
+    ResumeThread(thread.value);
   }
 }
 void serve(HANDLE pipe) {
@@ -228,6 +239,7 @@ void WINAPI serviceMain(DWORD,LPWSTR*) {
     if(accept(pipe.value,nullptr,1000))serve(pipe.value);
     DisconnectNamedPipe(pipe.value);
   }
+  clientJob.reset();clientApp.reset();
   serviceStatus(SERVICE_STOPPED);
 }
 }

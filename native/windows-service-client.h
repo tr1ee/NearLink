@@ -29,14 +29,27 @@ class DesktopServiceClient {
       FILE_FLAG_OVERLAPPED|SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION,nullptr));
     DWORD mode=PIPE_READMODE_MESSAGE;ULONG pid=0;
     if(!pipe_||!SetNamedPipeHandleState(pipe_.value,&mode,nullptr,nullptr)||!GetNamedPipeServerProcessId(pipe_.value,&pid))return {};
-    inputsecurity::Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid));
-    wchar_t self[32768]{},server[32768]{};DWORD size=ARRAYSIZE(server);
-    if(!process||!desktopservice::isSystem(process.value)||!GetModuleFileNameW(nullptr,self,ARRAYSIZE(self))||
-      !QueryFullProcessImageNameW(process.value,0,server,&size))return {};
+    // A Medium process need not be able to read a LocalSystem process token.
+    // Authenticate against the protected SCM registration and the kernel pipe
+    // server PID/session instead of demanding extra client privileges.
+    wchar_t self[32768]{};ULONG serverSession=1;
+    if(!GetModuleFileNameW(nullptr,self,ARRAYSIZE(self))||
+      !GetNamedPipeServerSessionId(pipe_.value,&serverSession)||serverSession!=0)return {};
     std::wstring directory=self;directory=directory.substr(0,directory.find_last_of(L'\\'));
     directory=directory.substr(0,directory.find_last_of(L'\\'));
     const auto expected=directory+L"\\NearLinkService.exe";
-    if(_wcsicmp(expected.c_str(),server)||!inputsecurity::protectedObject(directory)||!inputsecurity::protectedObject(expected))return {};
+    struct ScHandle {SC_HANDLE value=nullptr;~ScHandle(){if(value)CloseServiceHandle(value);}};
+    ScHandle manager{OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT)};
+    ScHandle service{manager.value?OpenServiceW(manager.value,desktopservice::serviceName,SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS):nullptr};
+    SERVICE_STATUS_PROCESS status{};DWORD needed=0;
+    if(!service.value||!QueryServiceStatusEx(service.value,SC_STATUS_PROCESS_INFO,reinterpret_cast<BYTE*>(&status),sizeof(status),&needed)||
+      status.dwCurrentState!=SERVICE_RUNNING||status.dwProcessId!=pid)return {};
+    QueryServiceConfigW(service.value,nullptr,0,&needed);std::vector<BYTE> configuration(needed);
+    if(needed<sizeof(QUERY_SERVICE_CONFIGW)||!QueryServiceConfigW(service.value,reinterpret_cast<QUERY_SERVICE_CONFIGW*>(configuration.data()),needed,&needed))return {};
+    const auto config=reinterpret_cast<QUERY_SERVICE_CONFIGW*>(configuration.data());
+    const auto command=L"\""+expected+L"\"";
+    if(_wcsicmp(config->lpServiceStartName,L"LocalSystem")||_wcsicmp(config->lpBinaryPathName,command.c_str())||
+      !inputsecurity::protectedObject(directory)||!inputsecurity::protectedObject(expected))return {};
     authority_=authority;sequence_=0;auto hello=packet(desktopservice::Operation::hello);
     hello.enabled=control;if(!request(hello)||last_.result!=NativeInputOutcome::applied)return {};
     return last_.challenge;

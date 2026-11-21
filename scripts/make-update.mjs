@@ -1,10 +1,14 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync } from "node:fs";
 import { createHash, sign, createPublicKey } from "node:crypto";
 import { execFileSync } from "node:child_process";
 const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 const { repository } = JSON.parse(
   readFileSync("resources/update-config.json", "utf8"),
 );
+const notesFile = `docs/release-notes-${version}.md`;
+if (existsSync(notesFile)) copyFileSync(notesFile, "outputs/发布说明.txt");
+if (existsSync("docs/service-user-guide-zh.md"))
+  copyFileSync("docs/service-user-guide-zh.md", "outputs/使用说明.txt");
 if (execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim())
   throw Error("Release source must be committed.");
 const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -57,6 +61,26 @@ writeFileSync(
     null,
     2,
   ) + "\n",
+);
+copyFileSync("outputs/使用说明.txt", "outputs/user-guide-zh.txt");
+const checksumFiles = [
+  ...["arm64", "x64"].flatMap((arch) =>
+    ["zip", "dmg"].map(
+      (ext) => `outputs/installers/NearLink-${version}-mac-${arch}.${ext}`,
+    ),
+  ),
+  `outputs/installers/NearLink-${version}-win-x64.exe`,
+  "outputs/nearlink-update.json",
+  "outputs/user-guide-zh.txt",
+];
+writeFileSync(
+  "outputs/SHA256SUMS.txt",
+  checksumFiles
+    .map(
+      (file) =>
+        `${createHash("sha256").update(readFileSync(file)).digest("hex")}  ${file.split("/").at(-1)}`,
+    )
+    .join("\n") + "\n",
 );
 console.log(
   `Signed update manifest for ${version}; private key was not included.`,

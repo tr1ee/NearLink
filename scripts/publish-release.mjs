@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, verify } from "node:crypto";
 import { basename } from "node:path";
 
 const args = process.argv.slice(2);
@@ -80,6 +80,39 @@ for (const arch of ["arm64", "x64"])
   for (const ext of ["zip", "dmg"])
     if (!mac.hashes?.[`NearLink-${version}-mac-${arch}.${ext}`])
       throw Error("Mac architecture report incomplete.");
+const envelope = JSON.parse(
+  readFileSync("outputs/nearlink-update.json", "utf8"),
+);
+const payload = Buffer.from(envelope.payload, "base64");
+if (
+  !verify(
+    null,
+    payload,
+    readFileSync("resources/update-public.pem"),
+    Buffer.from(envelope.signature, "base64"),
+  )
+)
+  throw Error("Update manifest signature is invalid.");
+const manifest = JSON.parse(payload.toString("utf8"));
+if (manifest.version !== version || manifest.sourceCommit !== sourceCommit)
+  throw Error("Signed manifest does not match release source.");
+for (const [platform, suffix] of [
+  ["darwin-arm64", "mac-arm64.zip"],
+  ["darwin-x64", "mac-x64.zip"],
+  ["win32-x64", "win-x64.exe"],
+]) {
+  const name = `NearLink-${version}-${suffix}`,
+    artifact = manifest.artifacts?.[platform],
+    expected = checksums.get(name);
+  if (
+    !artifact ||
+    artifact.url !==
+      `https://github.com/${repository}/releases/download/${tag}/${name}` ||
+    artifact.sha256 !== expected?.sha256 ||
+    artifact.size !== expected?.size
+  )
+    throw Error(`Signed artifact does not match ${name}`);
+}
 
 function github(...params) {
   execFileSync("gh", ["release", ...params, ...repo], { stdio: "inherit" });

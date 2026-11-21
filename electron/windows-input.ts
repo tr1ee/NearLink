@@ -77,6 +77,7 @@ export class WindowsInputService {
             m.challenge.length > 511
           )
             return;
+          this.report("service-peer-proof-requested");
           void this.authorizeService(authority, m.challenge).then(
             (proof) =>
               child.postMessage({ type: "service-proof", authority, proof }),

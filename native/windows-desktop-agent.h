@@ -3,12 +3,13 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include "windows-desktop-epoch.h"
 
 namespace desktopservice {
 struct AgentState {
   std::atomic<bool> stopped{false},granted{false},control{false};
   std::atomic<uint64_t> heartbeat{0};
-  std::atomic<uint32_t> epoch{0};
+  DesktopEpoch epoch;
   std::mutex layoutMutex;
   RECT layout{};
   FrameHeader* frame=nullptr;
@@ -38,8 +39,8 @@ inline void captureDesktop(AgentState& state,const std::wstring& desktop,DWORD s
   HDC screen=nullptr,canvas=nullptr;HBITMAP bitmap=nullptr;HGDIOBJ original=nullptr;void* pixels=nullptr;
   RECT selected{};bool initialized=false;
   auto clear=[&]{if(original&&canvas)SelectObject(canvas,original);if(bitmap)DeleteObject(bitmap);if(canvas)DeleteDC(canvas);if(screen)ReleaseDC(nullptr,screen);screen=canvas=nullptr;bitmap=nullptr;original=nullptr;pixels=nullptr;};
-  const uint32_t epoch=++state.epoch;
-  while(!state.stopped&&state.granted&&activeSession(session)&&activeDesktop()==desktop&&
+  const uint32_t epoch=state.epoch.observe(desktop);
+  while(!state.stopped&&state.granted&&state.epoch.matches(epoch)&&activeSession(session)&&activeDesktop()==desktop&&
         GetTickCount64()-state.heartbeat.load()<=inputwire::leaseMs) {
     RECT layout;{std::lock_guard<std::mutex> guard(state.layoutMutex);layout=state.layout;}
     if(!displayRectangle(layout)){Sleep(20);continue;}
@@ -103,7 +104,7 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
     sequence=request.sequence;Response reply;reply.sequence=sequence;
     if(authority.empty())authority=request.authority;
     if(authority!=request.authority)break;
-    const auto desktop=activeDesktop();
+    const auto desktop=activeDesktop();state.epoch.observe(desktop);
     if(!desktop.empty()&&desktop!=inputDesktop) {
       HDESK next=OpenDesktopW(desktop.c_str(),0,FALSE,DESKTOP_READOBJECTS|DESKTOP_WRITEOBJECTS);
       if(next&&SetThreadDesktop(next)){release();if(inputHandle)CloseDesktop(inputHandle);inputHandle=next;inputDesktop=desktop;}
@@ -115,7 +116,7 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
       RECT rectangle{request.left,request.top,LONG(right),LONG(bottom)};
       if(request.width>0&&request.height>0&&request.width<=8192&&request.height<=8192&&
         right<=LONG_MAX&&right>=LONG_MIN&&bottom<=LONG_MAX&&bottom>=LONG_MIN&&displayRectangle(rectangle)) {
-        {std::lock_guard<std::mutex> guard(state.layoutMutex);state.layout=rectangle;}
+        {std::lock_guard<std::mutex> guard(state.layoutMutex);if(!EqualRect(&state.layout,&rectangle))state.epoch.layoutChanged();state.layout=rectangle;}
         state.granted=true;state.control=request.enabled!=0;state.heartbeat=GetTickCount64();
         reply.result=NativeInputOutcome::applied;
       }
@@ -125,7 +126,7 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
       if(active&&release())reply.result=NativeInputOutcome::applied;
       if(request.operation==Operation::shutdown){state.control=false;state.granted=false;closed=true;}
     } else if(request.operation==Operation::input&&state.granted&&state.control&&active&&
-              request.desktopEpoch&&request.desktopEpoch==state.epoch.load()) {
+              state.epoch.matches(request.desktopEpoch)) {
       NativeInputCommand command;const auto& p=request.input;
       const bool validInput=inputwire::validPacket(p,inputwire::headerBytes+p.textBytes,p.sequence-1);
       if(validInput&&inputwire::decode(p,command)) {
@@ -134,7 +135,7 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
         if(!point||PtInRect(&layout,{command.screenX,command.screenY}))reply.result=applyNativeInput(command);
       }
     }
-    reply.desktopEpoch=state.epoch;reply.agentPid=GetCurrentProcessId();
+    reply.desktopEpoch=state.epoch.current();reply.agentPid=GetCurrentProcessId();
     if(!inputwire::io(pipe.value,true,&reply,sizeof(reply),count)||count!=sizeof(reply))break;
     mouseLogSize=mouseLogDropped=0;
   }

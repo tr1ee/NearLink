@@ -23,6 +23,8 @@
 - 真实 utility process／MessagePort `3/3`：独立松键、待批准时撤权，以及安装式服务重连证明／观看租约与输入分离。native 适配器为合成记录器。
 - 单元／回环网络最新 `111/113`，剩余两项本机符号链接 EPERM。安装辅助进程 kill 后不等 close 导致的 EBUSY 已修复，对应 6 项专项和全量中的该用例通过；未改变系统安全设置或跳过符号链接用例。
 - 首次实际安装已完成：SCM 服务为自动启动 LocalSystem／Session 0；受保护客户端自动启动于交互用户会话。未使用 Computer Use。
+- 首次服务更新核实了带引号的 SCM 镜像路径及旧客户端退出／新客户端启动。Medium 客户端用 SCM 注册、运行账户和管道 PID／Session 0 验证服务，不要求读取 System 进程令牌。相同设备范围的更新沿用安装批准，重连不应触发安装程序。
+- 第一轮独立 Windows CI 的 `113/113`、真实输入进程 `3/3` 及精确 NSIS 安装报告全部通过；后续 SCM 和桌面代次修正另行重建同提交的产物，不混用旧报告。桌面代次本机原生测试覆盖输入先观察到切换、重复观察不重复推进、布局撤销和并发观察。
 - 真机 UAC 捕获／输入、无提示重连、锁屏、桌面切换清理、系统音频与多显示器仍待使用新 Mac 版本验证。
 
 ## 构建、预发布与 Mac 更新
@@ -44,6 +46,6 @@ npm test
 npm run package:mac
 ```
 
-从对应 Windows 工作流下载 `Windows-prerelease` 产物，将 Windows exe 放入 `outputs/installers`，报告放入 `outputs`。检查两端产物归属，准备 `outputs/发布说明.txt`、`outputs/使用说明.txt` 和完整 `SHA256SUMS.txt`，再使用本机既有更新私钥执行 `npm run release:manifest`，通过 `npm run release:publish` 仅发布 prerelease。默认稳定 Latest 不改变。待双端验收符合预期再按原流程转正，不能把草稿或不匹配的安装报告计为通过。
+从同一提交的 Windows 工作流下载 `Windows-prerelease` 产物，将 Windows exe 放入 `outputs/installers`，报告放入 `outputs`。检查两端产物归属，使用 Mac 本机既有更新私钥执行 `npm run release:manifest`（从本版本文档生成说明和完整 `SHA256SUMS.txt`），再通过 `npm run release:publish` 仅发布 prerelease。工具检查两端报告、摘要、签名清单与实际提交，并将 release tag 固定到该提交，不能默认指向 main。默认稳定 Latest 不改变。待双端验收符合预期再按原流程转正，不能把草稿或不匹配的安装报告计为通过。
 
 Mac 用户在现有应用“设置 → 软件更新 → 更新源设置”中填写该预发布的版本清单地址，然后使用“检查更新 → 下载 → 安装并重新打开”。发布完成前不提供尚不存在的下载地址。预发布必须保留既有身份与配对数据，私钥和原始日志均不上传。
