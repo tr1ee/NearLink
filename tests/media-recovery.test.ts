@@ -15,6 +15,22 @@ test("开发测试身份只监听回环且不广播，正式应用仍发现局�
     "0.0.0.0",
   );
 });
+test("显式局域网调试保留独立身份目录，并开启监听与发现", () => {
+  assert.deepEqual(runtimeNetworkOptions("/dev-profile", false, true, true), {
+    stateDirectory: "/dev-profile",
+    discovery: true,
+    listenHost: "0.0.0.0",
+  });
+  assert.deepEqual(
+    runtimeNetworkOptions("/test", false, true, false),
+    runtimeNetworkOptions("/test", false, true),
+  );
+  assert.deepEqual(
+    runtimeNetworkOptions("/formal", true, true, true),
+    runtimeNetworkOptions("/formal", true, true),
+  );
+});
+
 test("重复且未变更的DNS响应续租，离线身份到期移除而不按名字合并", () => {
   const l = new DiscoveryLeases();
   l.record("a", { fqdn: "same-a.local", ttl: 2 }, 0);

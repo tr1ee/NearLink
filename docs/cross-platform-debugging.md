@@ -16,12 +16,15 @@ npm run native:update-launcher
 npm run build
 npm test
 set "NEARLINK_USER_DATA=%LOCALAPPDATA%\NearLink-Dev"
+set "NEARLINK_DEV_LAN=1"
 npm start
 ```
 
 原生输入模块与 DXGI 模块由 `npm run native` 编译到 `native/prebuilds/win32-x64/`；更新启动器由 `npm run native:update-launcher` 编译。仓库不携带这些二进制文件。运行时需要保持普通用户权限，以保留管理员窗口输入故障的复现条件。
 
 开发实例使用独立的用户数据目录，需要重新核对指纹配对，不会复用已安装版本的身份。启动前从托盘完全退出已安装版本，避免连接到旧实例。更改源码后重新执行 `npm run build` 并重启开发实例。
+
+`NEARLINK_USER_DATA` 在未打包实例中默认禁用局域网发现，并只监听 `127.0.0.1`，供单机回环测试隔离使用。双端调试必须显式设置 `NEARLINK_DEV_LAN=1`，才会开启发现并监听 `0.0.0.0`。此选项不改变配对、TLS 认证或会话授权；调试后退出实例即可停止监听。PowerShell 对应写法为 `$env:NEARLINK_USER_DATA="$env:LOCALAPPDATA\NearLink-Dev"; $env:NEARLINK_DEV_LAN="1"; npm start`。
 
 需要生成本机安装包时运行 `npm run package:win`，结果位于 `outputs/installers/`。联合调试不需要发布私钥，也不需要运行 `release:manifest` 或 `release:publish`。
 
@@ -35,7 +38,7 @@ node node_modules/electron/install.js
 npm run native
 npm run build
 npm test
-NEARLINK_USER_DATA="$PWD/work/dev-user-data" npm start
+NEARLINK_USER_DATA="$PWD/work/dev-user-data" NEARLINK_DEV_LAN=1 npm start
 ```
 
 开发实例仍需系统允许屏幕录制及辅助功能。与 Windows 开发实例重新配对后测试。使用已安装版本作对照时，分别记录版本与启动参数。

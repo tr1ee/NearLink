@@ -39,6 +39,7 @@ export class Runtime extends EventEmitter {
       app.getPath("userData"),
       app.isPackaged,
       !!process.env.NEARLINK_USER_DATA,
+      process.env.NEARLINK_DEV_LAN === "1",
     ),
   );
   files = new FileService(this.network);
@@ -84,6 +85,7 @@ export class Runtime extends EventEmitter {
         app.getPath("userData"),
         app.isPackaged,
         !!process.env.NEARLINK_USER_DATA,
+        process.env.NEARLINK_DEV_LAN === "1",
       ),
     );
     this.files = new FileService(this.network, {
