@@ -1,0 +1,343 @@
+name: Validate Windows update 0.1.12
+on:
+  push:
+    branches: [codex/validate-windows-0112]
+permissions:
+  contents: write
+jobs:
+  actual-update:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Download candidate from draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.1.12 --repo tr1ee/NearLink --pattern NearLink-0.1.12-win-x64.exe --dir downloads
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gh release download v0.1.11 --repo tr1ee/NearLink --pattern NearLink-0.1.11-win-x64.exe --dir downloads
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Actual PowerShell NSIS replacement and restart
+        shell: pwsh
+        env:
+          NEARLINK_EXPECTED_SHA256: 'b9076c0bbc70749fd2a84a6dcb69c10c77f688f2b464735e11cdac227cb1e4ea'
+        run: |
+          @'
+          // Isolated Windows-runner validation. Contains no application source or keys.
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import os from 'node:os';
+          import { randomUUID, createHash } from 'node:crypto';
+          import { spawn, execFile } from 'node:child_process';
+          import { promisify } from 'node:util';
+          import assert from 'node:assert/strict';
+          const execute = promisify(execFile);
+          const version = '0.1.12';
+          const root = path.join(process.env.RUNNER_TEMP, 'NearLink update verification');
+          const install = path.join(root, "安装 User & O'Neil", 'NearLink');
+          const profile = path.join(root, 'profile');
+          const updates = path.join(profile, 'updates');
+          const results = path.resolve('results');
+          fs.mkdirSync(updates, { recursive: true });
+          fs.mkdirSync(results, { recursive: true });
+          const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+          const ps = value => "'" + value.replaceAll("'", "''") + "'";
+          const runPS = code => execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; " + code], { timeout: 180000 });
+          const env = { ...process.env, NEARLINK_USER_DATA: profile };
+          for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN']) delete env[name];
+          const wait = ms => new Promise(r => setTimeout(r, ms));
+          async function until(check, name, timeout = 60000) {
+            const end = Date.now() + timeout;
+            while (Date.now() < end) {
+              const result = await check();
+              if (result) return result;
+              await wait(100);
+            }
+            throw Error('Timed out: ' + name);
+          }
+          const json = filename => { try { return JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, '')); } catch { return undefined; } };
+          function asarEntry(archive, name) {
+            const bytes = fs.readFileSync(archive);
+            const headerSize = bytes.readUInt32LE(4);
+            let entry = JSON.parse(bytes.toString('utf8', 16, 16 + bytes.readUInt32LE(12)));
+            for (const part of name.split('/')) entry = entry.files[part];
+            if (entry.unpacked) return { bytes: fs.readFileSync(path.join(archive + '.unpacked', ...name.split('/'))) };
+            const offset = 8 + headerSize + Number(entry.offset);
+            return { bytes: bytes.subarray(offset, offset + entry.size), offset };
+          }
+          const exe = path.join(install, 'NearLink.exe');
+          const stopApp = () => runPS(`Get-Process -Name NearLink -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ${ps(exe)} } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0`);
+          async function quitThroughApplication(port) {
+            const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+            const home = tabs.find(t => t.url.includes('window=home'));
+            assert(home?.webSocketDebuggerUrl, 'Home must be available for normal quit');
+            await new Promise((resolve, reject) => {
+              const socket = new WebSocket(home.webSocketDebuggerUrl);
+              const timeout = setTimeout(() => { socket.close(); resolve(); }, 3000);
+              socket.onopen = () => socket.send(JSON.stringify({id: 1, method: 'Runtime.evaluate', params:{expression: 'void window.nearlink.invoke("quit")', returnByValue:true}}));
+              socket.onerror = e => { clearTimeout(timeout); reject(Error('Quit control connection failed')); };
+              socket.onmessage = () => { clearTimeout(timeout); socket.close(); resolve(); };
+              socket.onclose = () => { clearTimeout(timeout); resolve(); };
+            });
+          }
+          const installerOriginal = path.resolve('downloads', `NearLink-${version}-win-x64.exe`);
+          const originalBytes = fs.readFileSync(installerOriginal);
+          assert.equal(createHash('sha256').update(originalBytes).digest('hex'), process.env.NEARLINK_EXPECTED_SHA256);
+          const report = { version, at: new Date().toISOString(), platform: os.type(), release: os.release(), scope: 'Actual 0.1.11 NSIS installation, Windows PowerShell update helper, real NSIS replacement with 0.1.12 and packaged application startup acknowledgment. No GPU or remote input testing.' };
+          report.installerSha256 = process.env.NEARLINK_EXPECTED_SHA256;
+          let launcherPid;
+          try {
+            report.powershell = (await runPS('$PSVersionTable.PSVersion.ToString()')).stdout.trim();
+            console.log('Installing the published baseline using real NSIS...');
+            const baseline = path.resolve('downloads', 'NearLink-0.1.11-win-x64.exe');
+            await runPS(`$p=Start-Process -FilePath ${ps(baseline)} -ArgumentList ${ps('/S /D=' + install)} -Wait -PassThru; if($p.ExitCode -ne 0){throw ('NSIS initial install '+$p.ExitCode)}`);
+            assert(fs.existsSync(exe), 'Initial install must use requested directory');
+            await stopApp();
+            await wait(1000);
+            const archive = path.join(install, 'resources', 'app.asar');
+            assert.equal(JSON.parse(asarEntry(archive, 'package.json').bytes).version, '0.1.11');
+            fs.writeFileSync(path.join(updates, 'config.json'), JSON.stringify({ autoCheck: false }));
+            // A forced kill can lose Chromium's newly created secure-storage Local
+            // State before it is flushed. Exercise the application's normal quit path.
+            const debugPort = 19227;
+            const oldApp = spawn(exe, ['--background', '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`], { env, detached: true, windowsHide: true, stdio: 'ignore' });
+            oldApp.unref();
+            await until(() => fs.existsSync(path.join(updates, 'cache-cleanup.json')), 'application startup and initial updater cleanup');
+            await wait(1500);
+            const sessionLog = path.join(profile, 'logs', 'session.jsonl');
+            const events = fs.readFileSync(sessionLog, 'utf8').trim().split('\n').map(JSON.parse);
+            report.windowsNativeInputWorkerLoaded = events.some(e => e.kind === 'input-worker' && e.event === 'ready');
+            assert(report.windowsNativeInputWorkerLoaded, 'Actual Windows native input module must load in independent worker');
+            const token = randomUUID();
+            const installer = path.join(updates, `NearLink-${version}-x64.exe`);
+            fs.copyFileSync(installerOriginal, installer);
+            const helper = path.join(updates, 'install-update.ps1');
+            const launcher = path.join(updates, `launcher-${token}.exe`);
+            fs.writeFileSync(helper, asarEntry(archive, 'resources/install-update-win.ps1').bytes);
+            fs.writeFileSync(launcher, asarEntry(archive, 'resources/update-launcher-win-x64.exe').bytes);
+            const request = {
+              version, installer, size: originalBytes.length,
+              sha256: createHash('sha256').update(originalBytes).digest('hex'),
+              parentPid: oldApp.pid, installDirectory: install, token,
+              logFile: path.join(updates, 'install.log'),
+              resultFile: path.join(updates, 'install-result.json'),
+              statusFile: path.join(updates, `install-${token}.json`),
+              startupFile: path.join(updates, `started-${token}.json`),
+            };
+            const requestFile = path.join(updates, `request-${token}.json`);
+            fs.writeFileSync(requestFile, JSON.stringify(request));
+            fs.writeFileSync(path.join(updates, 'windows-pending.json'), JSON.stringify({ version, token, startupFile: request.startupFile, executable: exe }));
+            const parentFile = path.join(root, 'launcher-parent.cjs');
+            const startedFile = path.join(root, 'launcher-started.json');
+            // Reproduce the production detached Node child, including parent exit. The
+            // bootstrap must keep PowerShell alive outside Node's kill-on-close job.
+            fs.writeFileSync(parentFile, `
+              const fs=require('node:fs'); const cp=require('node:child_process');
+              const request=${JSON.stringify(request)};
+              const output=fs.openSync(${JSON.stringify(path.join(updates, 'install-startup.log'))},'w');
+              const child=cp.spawn(${JSON.stringify(launcher)},${JSON.stringify([powershell, helper, requestFile, path.join(updates, 'install-startup.log')])},{cwd:${JSON.stringify(updates)},detached:true,windowsHide:true,stdio:['ignore',output,output]});
+              child.on('error',e=>{console.error(e);process.exit(1)});
+              child.on('exit',code=>{console.error('Bootstrap exited before ready:',code);process.exit(1)});
+              const deadline=Date.now()+30000;
+              const poll=setInterval(()=>{
+                if(Date.now()>deadline){console.error('No helper readiness');process.exit(1)}
+                try{const s=JSON.parse(fs.readFileSync(request.statusFile,'utf8'));if(s.stage==='failed'){console.error(s.message);process.exit(1)}if(s.token===request.token&&s.stage==='ready'){fs.writeFileSync(${JSON.stringify(startedFile)},JSON.stringify({pid:child.pid}));clearInterval(poll);child.unref();fs.closeSync(output);process.exit(0)}}catch{}
+              },100);
+            `);
+            console.log('Launching actual GUI bootstrap with detached Node parent...');
+            await execute(process.execPath, [parentFile], { env, timeout: 40000 });
+            launcherPid = json(startedFile).pid;
+            await wait(1000);
+            process.kill(launcherPid, 0);
+            report.launcherSurvivedNodeParent = true;
+            report.helperReadyBeforeAppExit = json(request.statusFile).stage === 'ready';
+            assert(report.helperReadyBeforeAppExit);
+            await quitThroughApplication(debugPort);
+            await until(() => {
+              const events = fs.readFileSync(sessionLog, 'utf8').trim().split('\n').map(JSON.parse);
+              return events.some(e => e.kind === 'application' && e.event === 'quit-requested');
+            }, 'normal application quit request');
+            report.applicationQuitWasGraceful = true;
+            console.log('Original app exited; waiting for real NSIS replacement and new app readiness...');
+            const completed = await until(() => {
+              const result = json(request.resultFile);
+              if (result?.stage === 'failed') throw Error(result.message);
+              return result?.stage === 'completed' ? result : false;
+            }, 'NSIS replacement and startup acknowledgment', 150000);
+            report.result = completed;
+            report.installedVersion = JSON.parse(asarEntry(archive, 'package.json').bytes).version;
+            assert.equal(report.installedVersion, version);
+            assert.equal(json(request.startupFile)?.version, version);
+            report.applicationStartupConfirmed = true;
+            const captureAddon = path.join(install, 'resources', 'app.asar.unpacked', 'native', 'prebuilds', 'win32-x64', 'nearlink-capture.node');
+            assert(fs.existsSync(captureAddon), 'The new installer must include the DXGI addon');
+            await execute(process.execPath, ['-e', 'const native = require(process.argv[1]); if (typeof native.open !== "function" || typeof native.read !== "function") process.exit(1);', captureAddon], { env, timeout: 10000 });
+            report.windowsDxgiAddonLoaded = true;
+            await until(() => !fs.existsSync(installer), 'confirmed installer cache removal', 15000);
+            report.installerCacheRemoved = true;
+            const startup = fs.readFileSync(path.join(updates, 'install-startup.log'), 'utf8');
+            const log = fs.readFileSync(request.logFile, 'utf8');
+            assert(startup.includes('PowerShell created'));
+            assert(log.includes('Installed version verified: ' + version));
+            assert(log.includes('Updated application confirmed ready'));
+            report.startupAndInstallLogsPresent = true;
+            report.status = 'passed';
+            console.log(JSON.stringify(report, null, 2));
+          } catch (error) {
+            report.status = 'failed'; report.error = String(error.stack || error); throw error;
+          } finally {
+            fs.writeFileSync(path.join(results, 'windows-real-install.json'), JSON.stringify(report, null, 2));
+            for (const name of ['install.log', 'install-startup.log', 'install-result.json', 'cache-cleanup.json'])
+              if (fs.existsSync(path.join(updates, name))) fs.copyFileSync(path.join(updates, name), path.join(results, name));
+            const sessionLog = path.join(profile, 'logs', 'session.jsonl');
+            if(fs.existsSync(sessionLog)) fs.copyFileSync(sessionLog, path.join(results, 'application-startup.jsonl'));
+            await stopApp().catch(() => {});
+            if (launcherPid) { try { process.kill(launcherPid); } catch {} }
+          }
+          '@ | Set-Content -LiteralPath nearlink-update-test.mjs -Encoding utf8
+          node nearlink-update-test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Write Windows tray-like input fixture
+        shell: pwsh
+        run: |
+          @'
+          #define WIN32_LEAN_AND_MEAN
+          #include <windows.h>
+          #include <windowsx.h>
+          #include <cstdio>
+          #include <cstdlib>
+          
+          int downs = 0, ups = 0, doubles = 0, drags = 0;
+          int anchorX = 0, anchorY = 0;
+          bool held = false, moved = false;
+          
+          void report() {
+            if (auto file = std::fopen("tray-status.txt", "w")) {
+              std::fprintf(file, "%d %d %d %d\n", downs, ups, doubles, drags);
+              std::fclose(file);
+            }
+          }
+          
+          LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM keys, LPARAM point) {
+            const int x = GET_X_LPARAM(point), y = GET_Y_LPARAM(point);
+            switch (message) {
+              case WM_LBUTTONDBLCLK:
+                ++doubles;
+                [[fallthrough]];
+              case WM_LBUTTONDOWN:
+                ++downs;
+                anchorX = x;
+                anchorY = y;
+                held = true;
+                moved = false;
+                return 0;
+              case WM_MOUSEMOVE:
+                if (held && (keys & MK_LBUTTON) &&
+                    (std::abs(x - anchorX) > GetSystemMetrics(SM_CXDRAG) ||
+                     std::abs(y - anchorY) > GetSystemMetrics(SM_CYDRAG))) moved = true;
+                return 0;
+              case WM_LBUTTONUP:
+                if (held) {
+                  if (moved || std::abs(x - anchorX) > GetSystemMetrics(SM_CXDRAG) ||
+                      std::abs(y - anchorY) > GetSystemMetrics(SM_CYDRAG)) ++drags;
+                  held = false;
+                  ++ups;
+                  report();
+                }
+                return 0;
+              case WM_DESTROY:
+                PostQuitMessage(0);
+                return 0;
+            }
+            return DefWindowProcW(window, message, keys, point);
+          }
+          
+          int main() {
+            WNDCLASSW cls{};
+            cls.style = CS_DBLCLKS;
+            cls.lpfnWndProc = windowProc;
+            cls.hInstance = GetModuleHandleW(nullptr);
+            cls.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+            cls.lpszClassName = L"NotifyIconOverflowWindow";
+            if (!RegisterClassW(&cls)) return 2;
+            const HWND window = CreateWindowExW(WS_EX_TOPMOST, cls.lpszClassName, L"NearLink tray input fixture",
+                WS_POPUP | WS_VISIBLE, 80, 80, 400, 260, nullptr, nullptr, cls.hInstance, nullptr);
+            if (!window) return 3;
+            SetWindowPos(window, HWND_TOPMOST, 80, 80, 400, 260, SWP_SHOWWINDOW);
+            POINT center{200, 120};
+            if (!ClientToScreen(window, &center)) return 4;
+            if (auto file = std::fopen("tray-ready.txt", "w")) {
+              std::fprintf(file, "%ld %ld %d %u\n", center.x, center.y,
+                  GetSystemMetrics(SM_CXDRAG), GetDoubleClickTime());
+              std::fclose(file);
+            } else return 5;
+            MSG message;
+            while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+          }
+          '@ | Set-Content -LiteralPath tray-input-fixture.cc -Encoding utf8
+          @'
+          const assert = require("node:assert/strict");
+          const { spawn } = require("node:child_process");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const native = require(path.resolve(process.argv[2]));
+          const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const window = spawn(path.resolve("tray-input-fixture.exe"), { stdio: "inherit" });
+          async function values(file, predicate) {
+            for (let i = 0; i < 150; i++) {
+              if (fs.existsSync(file)) {
+                const record = fs.readFileSync(file, "utf8").trim().split(/\s+/).map(Number);
+                if (record.length === 4 && predicate(record)) return record;
+              }
+              await pause(40);
+            }
+            throw Error("Timed out reading " + file);
+          }
+          (async () => {
+            const [x, y, threshold, doubleClickTime] = await values("tray-ready.txt", () => true);
+            await pause(500);
+            const event = (type, extra) => native.input({ type, screenX: x, screenY: y, ...extra });
+            const click = (down, dx = 0) => event("button", { down, button: 0, screenX: x + dx });
+            const move = (dx) => event("move", { screenX: x + dx });
+            const dragOffset = Math.max(threshold + 12, 20);
+            assert.equal(click(true), true);
+            assert.equal(click(false), "tray-click");
+            await pause(75);
+            assert.equal(click(true), true);
+            assert.equal(move(Math.max(0, threshold - 1)), "suppressed-move");
+            assert.equal(click(false, dragOffset), "tray-click");
+            assert.deepEqual(await values("tray-status.txt", (r) => r[1] === 2), [2, 2, 1, 0]);
+            await pause(doubleClickTime + 200);
+            assert.equal(click(true), true);
+            assert.equal(move(dragOffset), true);
+            assert.equal(click(false, dragOffset), true);
+            assert.deepEqual(await values("tray-status.txt", (r) => r[1] === 3), [3, 3, 1, 1]);
+            console.log("Actual Windows SendInput delivered two clicks with one double click, plus a separate genuine drag");
+          })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => window.kill());
+          '@ | Set-Content -LiteralPath tray-input-fixture.cjs -Encoding utf8
+      - name: Build Windows input fixture
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installerswhere.exe" -latest -property installationPath`) do set "NEARLINK_VS=%%i"
+          call "%NEARLINK_VS%\VC\Auxiliary\Buildcvars64.bat"
+          if errorlevel 1 exit /b %errorlevel%
+          cl /nologo /std:c++17 /EHsc /O2 tray-input-fixture.cc /link user32.lib
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Real SendInput double-click and drag regression
+        shell: pwsh
+        run: |
+          $fixtureNative = Join-Path $env:RUNNER_TEMP 'NearLink update verification/安装 User & O''Neil/NearLink/resources/app.asar.unpacked/native/prebuilds/win32-x64/nearlink.node'
+          node tray-input-fixture.cjs $fixtureNative
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Preserve only installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-0.1.12
+          path: results/
+          retention-days: 7
+          if-no-files-found: warn
