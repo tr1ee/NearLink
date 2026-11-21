@@ -7,6 +7,7 @@ export type InputScope = {
   sessionId: string;
   allowed: boolean;
   authority?: string;
+  serviceActive?: boolean;
   display: { x: number; y: number; width: number; height: number };
 };
 export class InputState {

@@ -57,6 +57,9 @@ export async function launchWindowsHelper(options: {
     windowsHide: true,
     stdio: ["ignore", output.fd, output.fd],
   });
+  const closed = new Promise<void>((resolve) =>
+    child.once("close", () => resolve()),
+  );
   let exited = false,
     exitCode: number | null = null,
     spawnError: Error | undefined;
@@ -104,6 +107,16 @@ export async function launchWindowsHelper(options: {
   } catch (error) {
     // It has not been allowed to install: the parent is still running.
     if (!exited) child.kill();
+    // kill() only requests termination. Wait for process/stdio teardown before
+    // callers remove the startup directory or retry an installation on Windows.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      closed,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 2000);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
     throw error;
   } finally {
     await output.close();

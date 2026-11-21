@@ -34,4 +34,5 @@ NL_NAPI(napi_create_async_work,(napi_env e,napi_value r,napi_value n,napi_async_
 NL_NAPI(napi_queue_async_work,(napi_env e,napi_async_work w),(e,w))
 NL_NAPI(napi_delete_async_work,(napi_env e,napi_async_work w),(e,w))
 NL_NAPI(napi_resolve_deferred,(napi_env e,napi_deferred d,napi_value v),(e,d,v))
+NL_NAPI(napi_create_string_utf16,(napi_env e,const char16_t*s,size_t n,napi_value*v),(e,s,n,v))
 #undef NL_NAPI

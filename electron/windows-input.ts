@@ -15,11 +15,16 @@ export class WindowsInputService {
     active: false,
   };
   private handledAuthority?: string;
+  private serviceMapping?: string;
   constructor(
     private nativePath: string,
     private report: (event: string, details?: any) => void = () => {},
     private entry = path.join(__dirname, "input-worker.cjs"),
     private developmentHelper?: DevelopmentInputHelper,
+    private authorizeService?: (
+      authority: string,
+      challenge: string,
+    ) => Promise<{ certificate: string; proof: string }>,
   ) {}
   start() {
     return new Promise<void>((resolve, reject) => {
@@ -48,6 +53,7 @@ export class WindowsInputService {
             ".asar.unpacked$1",
           ),
           helper: this.developmentHelper,
+          installedService: !!this.authorizeService,
         }),
       );
       child.on("message", (m) => {
@@ -60,13 +66,55 @@ export class WindowsInputService {
           clearTimeout(timer);
           child.kill();
           reject(Error(m.message));
+        } else if (
+          m?.type === "service-proof-request" &&
+          this.authorizeService
+        ) {
+          const authority = m.authority;
+          if (
+            typeof authority !== "string" ||
+            typeof m.challenge !== "string" ||
+            m.challenge.length > 511
+          )
+            return;
+          this.report("service-peer-proof-requested");
+          void this.authorizeService(authority, m.challenge).then(
+            (proof) => {
+              this.report("service-peer-proof-received");
+              child.postMessage({ type: "service-proof", authority, proof });
+            },
+            (error) => {
+              const reasons: Record<string, string> = {
+                服务认证与当前远控会话不符: "session-mismatch",
+                无效服务认证请求: "invalid-challenge",
+                不支持此操作: "unsupported-peer",
+                服务授权会话已结束: "session-revoked",
+                请求超时: "peer-timeout",
+                设备未连接: "peer-disconnected",
+              };
+              this.report("service-peer-proof-rejected", {
+                reason: reasons[error?.message] || "peer-rejected",
+              });
+              child.postMessage({
+                type: "service-proof",
+                authority,
+                error: "对端需要同步支持安装式服务认证的版本",
+              });
+            },
+          );
         } else if (m?.type === "helper-status") {
+          this.serviceMapping =
+            m.active && typeof m.mapping === "string" ? m.mapping : undefined;
           this.helper = {
             active: m.active === true,
             pid: m.pid,
             state: m.state,
           };
-          if (m.state !== "awaiting-local-approval")
+          if (
+            !["awaiting-local-approval", "awaiting-peer-proof"].includes(
+              m.state,
+            )
+          )
             this.handledAuthority = m.authority;
           this.report("helper-status", this.helper);
         } else if (m?.type === "helper-diagnostic") {
@@ -104,11 +152,22 @@ export class WindowsInputService {
   status() {
     return { ready: this.ready, pid: this.child?.pid, helper: this.helper };
   }
+  captureMapping(sessionId: string) {
+    if (
+      !this.authorizeService ||
+      this.scope?.sessionId !== sessionId ||
+      !this.scope.serviceActive ||
+      !this.helper.active ||
+      !this.serviceMapping
+    )
+      throw Error("服务采集授权尚未就绪");
+    return this.serviceMapping;
+  }
   async waitForAuthorization(sessionId: string) {
     const deadline = Date.now() + 180000;
     while (
-      this.developmentHelper &&
-      this.scope?.allowed &&
+      (this.developmentHelper || this.authorizeService) &&
+      (this.scope?.allowed || this.scope?.serviceActive) &&
       this.scope.sessionId === sessionId &&
       this.scope.authority &&
       this.handledAuthority !== this.scope.authority
@@ -117,6 +176,15 @@ export class WindowsInputService {
         throw Error("本机输入授权尚未完成，请在 Windows 本机处理授权。");
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    if (
+      this.authorizeService &&
+      this.scope?.sessionId === sessionId &&
+      this.scope.serviceActive &&
+      !this.helper.active
+    )
+      throw Error(
+        `Windows 桌面服务授权失败 (${this.helper.state || "not-ready"})`,
+      );
   }
   async stop() {
     this.configure(null);

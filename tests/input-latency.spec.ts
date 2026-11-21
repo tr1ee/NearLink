@@ -7,6 +7,7 @@ import {
 import { build } from "esbuild";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画与有界鼠标队列", async () => {
   // Used only by the isolated A/B control experiment, never by the app.
   const bufferControl = process.env.NEARLINK_TEST_BUFFER_CONTROL === "1";
@@ -79,7 +80,7 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
           .poll(
             async () => {
               for (const p of app.windows()) {
-                if (p.url() !== `file://${filename}`) continue;
+                if (p.url() !== pathToFileURL(filename).href) continue;
                 const w = await app.browserWindow(p);
                 if ((await w.evaluate((w) => w.webContents.id)) === id) {
                   selected = p;
@@ -233,6 +234,28 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
         { timeout: 20000 },
       )
       .toBe(true);
+    // Service input must carry the epoch delivered over the host's actual
+    // accepted channel. A separate feedbackChannel reference alone left the
+    // production epoch announcer without a channel and all input was rejected.
+    await host.evaluate(() => {
+      const engine = (window as any).engine;
+      if (engine.control?.readyState !== "open")
+        throw Error("host control channel was not retained");
+      engine.announceDesktop(7);
+    });
+    await expect
+      .poll(() =>
+        controller.evaluate(() => (window as any).engine.desktopEpoch),
+      )
+      .toBe(7);
+    await controller.evaluate(() =>
+      (window as any).engine.input({ type: "key", code: "KeyA", down: false }),
+    );
+    await expect
+      .poll(() =>
+        host.evaluate(() => (window as any).applied.at(-1)?.desktopEpoch),
+      )
+      .toBe(7);
     await expect
       .poll(
         () =>
@@ -490,6 +513,12 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
       ],
     });
     await controller.addStyleTag({ path: "src/styles.css" });
+    // This fixture deliberately keeps BrowserWindows hidden. Their compositor
+    // need not advance CSS transitions, so exclude animation from input/media
+    // assertions instead of forcing clicks on the offscreen toolbar.
+    await controller.addStyleTag({
+      content: "* { transition: none !important; animation: none !important; }",
+    });
     await controller.addScriptTag({ content: ui.outputFiles[0].text });
     await expect
       .poll(() => controller.locator(".session-shell").count(), {
@@ -769,6 +798,7 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
     await expect
       .poll(() => buttonState(recoveredFrom))
       .toEqual([true, false, true, false]);
+    await controller.locator(".toolbar-reveal").hover();
     await controller
       .getByRole("button", { name: "性能诊断", exact: true })
       .click();
@@ -797,7 +827,7 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
     await controller
       .getByRole("button", { name: "性能诊断", exact: true })
       .click();
-    const screenshot = "/private/tmp/nearlink-input-feedback.png";
+    const screenshot = path.join(root, "nearlink-input-feedback.png");
     await controller.screenshot({ path: screenshot });
     const report = {
       at: new Date().toISOString(),
@@ -848,6 +878,7 @@ test("隐藏窗口真实WebRTC：输入反馈、原生分辨率、独立音画�
       }),
     );
   } finally {
+    await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
     await app.close();
   }
 });

@@ -13,6 +13,7 @@ import {
   clipboard,
 } from "electron";
 import path from "node:path";
+import { installDesktopService } from "./service-install";
 import os from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
 import { Runtime } from "./runtime";
@@ -354,6 +355,24 @@ function updateTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "打开近控", click: showHome },
+      ...(process.platform === "win32"
+        ? [
+            {
+              label: runtime.installedService
+                ? "重新安装／更新无人值守服务…"
+                : "安装无人值守服务…",
+              click: () => {
+                void installDesktopService(runtime!.store).catch((error) =>
+                  dialog.showMessageBox({
+                    type: "error",
+                    message: "服务安装未完成",
+                    detail: String(error?.message || error),
+                  }),
+                );
+              },
+            },
+          ]
+        : []),
       {
         label: "恢复远控窗口",
         enabled: runtime.session?.role === "controller",
@@ -767,7 +786,11 @@ async function initialize() {
         if (meta.kind !== "host") throw new Error("无效采集入口");
         return {
           ...(await runtime.source()),
-          captureBackend: useDxgi ? "dxgi" : "chromium",
+          captureBackend: runtime.installedService
+            ? "service"
+            : useDxgi
+              ? "dxgi"
+              : "chromium",
         };
       case "media.input-ready":
         if (meta.kind !== "host" || runtime.session?.id !== args[0])
@@ -778,14 +801,14 @@ async function initialize() {
       case "capture.dxgi.open": {
         const current = runtime.session;
         if (
-          !useDxgi ||
+          (!useDxgi && !runtime.installedService) ||
           meta.kind !== "host" ||
           current?.role !== "host" ||
           current.id !== args[0] ||
           current.state === "reconnecting" ||
-          runtime.locked ||
-          current.quality.auto ||
-          current.quality.height !== 1080 ||
+          (runtime.locked && !runtime.installedService) ||
+          (!runtime.installedService &&
+            (current.quality.auto || current.quality.height !== 1080)) ||
           !runtime.network.authorized(current.peerId) ||
           typeof args[1] !== "string" ||
           args[1].length > 64
@@ -796,9 +819,10 @@ async function initialize() {
         );
         if (
           !display ||
-          display.rotation !== 0 ||
-          Math.round(display.width * display.scale) !== 1920 ||
-          Math.round(display.height * display.scale) !== 1080
+          (!runtime.installedService &&
+            (display.rotation !== 0 ||
+              Math.round(display.width * display.scale) !== 1920 ||
+              Math.round(display.height * display.scale) !== 1080))
         )
           throw Error("DXGI 对照需要标准方向的 1920 × 1080 显示器");
         const center = screen.dipToScreenPoint({
@@ -806,7 +830,14 @@ async function initialize() {
           y: Math.floor(display.y + display.height / 2),
         });
         stopDxgi();
-        const capture = startWindowsCapture(event.sender, args[1], center);
+        const capture = startWindowsCapture(
+          event.sender,
+          args[1],
+          center,
+          runtime.installedService
+            ? runtime.inputService!.captureMapping(current.id)
+            : undefined,
+        );
         dxgi = {
           sessionId: current.id,
           displayId: current.displayId,

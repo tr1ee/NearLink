@@ -12,6 +12,100 @@ let pendingApproval = false;
 let helperAuthority = "";
 let attemptedAuthority = "";
 let lastHelperDiagnostic = "";
+let installedService = false;
+let serviceAuthority = "";
+let serviceFailed = false;
+let proofReply:
+  | { authority: string; resolve: (v: any) => void; reject: (e: Error) => void }
+  | undefined;
+
+async function configureService(scope: InputScope | null) {
+  latestScope = scope;
+  if (pendingApproval) {
+    if (!scope?.serviceActive || scope.authority !== attemptedAuthority) {
+      proofReply?.reject(Error("会话已撤销"));
+      proofReply = undefined;
+      native.stopDesktopService();
+    }
+    return;
+  }
+  if (serviceFailed) {
+    state?.configure(null);
+    return;
+  }
+  if (
+    serviceAuthority &&
+    (!scope?.serviceActive || scope.authority !== serviceAuthority)
+  ) {
+    state?.configure(null);
+    if (!native.stopDesktopService()) {
+      serviceFailed = true;
+      helperStatus(false, "service-cleanup-unconfirmed");
+      return;
+    }
+    serviceAuthority = "";
+    helperStatus(false, "service-stopped");
+  }
+  if (!scope?.serviceActive || !scope.authority) {
+    state?.configure(null);
+    return;
+  }
+  if (!serviceAuthority && scope.authority !== attemptedAuthority) {
+    state?.configure(null);
+    pendingApproval = true;
+    attemptedAuthority = scope.authority;
+    helperStatus(false, "awaiting-peer-proof");
+    let stage = "service-connect-failed";
+    try {
+      const challenge = native.beginDesktopService({
+        authority: scope.authority,
+        allowed: scope.allowed,
+      });
+      if (typeof challenge !== "string") throw Error("服务不可用或安装不匹配");
+      stage = "service-peer-proof-failed";
+      const proof = await new Promise<any>((resolve, reject) => {
+        proofReply = { authority: scope.authority!, resolve, reject };
+        parent.postMessage({
+          type: "service-proof-request",
+          authority: scope.authority,
+          challenge,
+        });
+      });
+      stage = "service-native-authentication-failed";
+      if (
+        latestScope?.authority !== scope.authority ||
+        !latestScope?.serviceActive ||
+        !native.authenticateDesktopService(proof)
+      )
+        throw Error("服务认证失败");
+      serviceAuthority = scope.authority;
+      helperStatus(true, "service-ready");
+    } catch {
+      native.stopDesktopService();
+      helperStatus(false, stage);
+    } finally {
+      pendingApproval = false;
+      proofReply = undefined;
+    }
+    await configureService(latestScope);
+    return;
+  }
+  if (!serviceAuthority) {
+    state?.configure(null);
+    return;
+  }
+  if (
+    !native.configureDesktopService({
+      allowed: scope.allowed,
+      ...scope.display,
+    })
+  ) {
+    state?.configure(null);
+    helperStatus(false, "service-configure-failed");
+    return;
+  }
+  state?.configure(scope);
+}
 
 function helperStatus(active: boolean, status: string) {
   parent.postMessage({
@@ -19,11 +113,20 @@ function helperStatus(active: boolean, status: string) {
     active,
     state: status,
     authority: attemptedAuthority,
-    pid: active ? native.inputHelperPid?.() : undefined,
+    pid: active
+      ? installedService
+        ? native.desktopServiceStatus?.().pid
+        : native.inputHelperPid?.()
+      : undefined,
+    mapping:
+      active && installedService
+        ? native.desktopServiceStatus?.().mapping
+        : undefined,
   });
 }
 
 async function configureScope(scope: InputScope | null) {
+  if (installedService) return configureService(scope);
   latestScope = scope;
   if (pendingApproval) {
     if (!scope?.allowed || scope.authority !== attemptedAuthority)
@@ -99,6 +202,14 @@ async function configureScope(scope: InputScope | null) {
 
 function flushMouseDiagnostics() {
   try {
+    if (!pendingApproval && serviceAuthority && native.desktopServiceDiagnostics) {
+      const sample = native.desktopServiceDiagnostics();
+      const key = JSON.stringify(sample);
+      if (key !== lastHelperDiagnostic) {
+        lastHelperDiagnostic = key;
+        parent.postMessage({ type: "helper-diagnostic", sample });
+      }
+    }
     if (!pendingApproval && helperAuthority && native.inputHelperDiagnostics) {
       const sample = native.inputHelperDiagnostics();
       const key = JSON.stringify(sample);
@@ -117,12 +228,21 @@ function flushMouseDiagnostics() {
 
 parent.on("message", (event: any) => {
   const m = event.data;
-  if (m?.type === "init") {
+  if (
+    m?.type === "service-proof" &&
+    proofReply &&
+    proofReply.authority === m.authority
+  ) {
+    if (m.error) proofReply.reject(Error(m.error));
+    else proofReply.resolve(m.proof);
+    proofReply = undefined;
+  } else if (m?.type === "init") {
     try {
       native = require(m.nativePath);
       if (native.watchInputOwner && !native.watchInputOwner(m.parentPid))
         throw Error("无法监视输入所属进程");
       helperOptions = m.helper;
+      installedService = m.installedService === true;
       state = new InputState((input) => native.input(input));
       takeMouseDiagnostics =
         typeof native.takeMouseDiagnostics === "function"
@@ -161,6 +281,16 @@ parent.on("message", (event: any) => {
       try {
         if (message?.type === "heartbeat") {
           if (
+            installedService &&
+            serviceAuthority &&
+            latestScope?.serviceActive &&
+            message.sessionId === latestScope.sessionId
+          ) {
+            state.heartbeat(message.sessionId);
+            if (!native.heartbeatDesktopService()) void configureService(null);
+            return;
+          }
+          if (
             state.heartbeat(message.sessionId) &&
             helperAuthority &&
             !native.heartbeatInputHelper()
@@ -195,6 +325,13 @@ parent.on("message", (event: any) => {
     });
     current.start();
   } else if (m?.type === "shutdown") {
+    if (installedService) {
+      proofReply?.reject(Error("进程退出"));
+      proofReply = undefined;
+      state?.configure(null);
+      native.stopDesktopService();
+      process.exit(0);
+    }
     if (pendingApproval) native.cancelInputHelper?.();
     else {
       state?.configure(null);
@@ -215,6 +352,10 @@ const timer = setInterval(() => {
     helperStatus(false, "stopped-after-confirmed-cleanup");
   }
   if (native?.inputOwnerAlive && !native.inputOwnerAlive()) {
+    if (installedService) {
+      native.stopDesktopService();
+      process.exit(0);
+    }
     if (pendingApproval) native.cancelInputHelper?.();
     else {
       state?.configure(null);

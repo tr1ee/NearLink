@@ -29,6 +29,7 @@ import {
 import { mapPoint } from "../src/shared/geometry";
 import { WindowsInputService } from "./windows-input";
 import { developmentInputHelper } from "./development-input-helper";
+import { desktopServiceProof } from "./service-proof";
 export class Runtime extends EventEmitter {
   openBenchmark?: (
     display: DisplayInfo,
@@ -50,6 +51,9 @@ export class Runtime extends EventEmitter {
   inputService?: WindowsInputService;
   warning = "";
   locked = false;
+  installedService =
+    process.platform === "win32" &&
+    process.env.NEARLINK_INSTALLED_SERVICE === "1";
   private blocker: number | null = null;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectStarted = 0;
@@ -75,7 +79,24 @@ export class Runtime extends EventEmitter {
           nativePath,
           (event, details) => this.emit("input-worker", event, details),
           undefined,
-          developmentInputHelper(app.isPackaged, !!process.env.NEARLINK_USER_DATA),
+          developmentInputHelper(
+            app.isPackaged,
+            !!process.env.NEARLINK_USER_DATA,
+          ),
+          this.installedService
+            ? async (authority, challenge) => {
+                const s = this.session;
+                if (
+                  !s ||
+                  s.role !== "host" ||
+                  this.inputAuthority(s.id, s.peerId) !== authority
+                )
+                  throw Error("服务授权会话已结束");
+                return this.network.rpc(s.peerId, "desktop-service.proof", {
+                  challenge,
+                });
+              }
+            : undefined,
         );
         await this.inputService.start();
       } else this.native = require(nativePath);
@@ -182,7 +203,10 @@ export class Runtime extends EventEmitter {
       this.locked = true;
       this.release();
       this.clipboard.stop();
-      this.emit("lock", true);
+      this.emit(
+        "lock",
+        !(this.installedService && this.session?.role === "host"),
+      );
       this.changed();
     });
     powerMonitor.on("unlock-screen", () => {
@@ -270,16 +294,24 @@ export class Runtime extends EventEmitter {
     this.inputService.configure({
       sessionId: s.id,
       authority: this.inputAuthority(s.id, s.peerId),
+      serviceActive:
+        this.installedService &&
+        s.state !== "reconnecting" &&
+        this.network.authorized(s.peerId),
       allowed:
         !s.viewOnly &&
-        !this.locked &&
+        (!this.locked || this.installedService) &&
         s.state !== "reconnecting" &&
         this.network.authorized(s.peerId),
       display: {
         x: first.x,
         y: first.y,
-        width: last.x - first.x + 1,
-        height: last.y - first.y + 1,
+        width: this.installedService
+          ? Math.round(display.width * display.scale)
+          : last.x - first.x + 1,
+        height: this.installedService
+          ? Math.round(display.height * display.scale)
+          : last.y - first.y + 1,
       },
     });
   }
@@ -294,7 +326,8 @@ export class Runtime extends EventEmitter {
     return `${sessionId}:${peerId}:${generation}`;
   }
   checkPeerBusy(id: string) {
-    if (this.locked) throw new Error("电脑已锁定，请在本机解锁后重试");
+    if (this.locked && !this.installedService)
+      throw new Error("电脑已锁定，请在本机解锁后重试");
     if (this.session && this.session.peerId !== id)
       throw new Error("电脑正与其他设备远控，请稍后再试");
   }
@@ -311,6 +344,13 @@ export class Runtime extends EventEmitter {
   }
   private async rpc(id: string, method: string, args: any) {
     this.checkPeerBusy(id);
+    if (method === "desktop-service.proof")
+      return desktopServiceProof(
+        this.store.identity,
+        id,
+        this.session,
+        args?.challenge,
+      );
     if (method === "preview") {
       if (
         process.platform === "darwin" &&
@@ -515,7 +555,7 @@ export class Runtime extends EventEmitter {
       !s ||
       s.role !== "host" ||
       s.viewOnly ||
-      this.locked ||
+      (this.locked && !this.installedService) ||
       s.state === "reconnecting" ||
       !this.network.authorized(s.peerId)
     )
@@ -548,8 +588,18 @@ export class Runtime extends EventEmitter {
   }
   async source() {
     const current = this.session;
-    if (!current || current.role !== "host" || this.locked)
+    if (
+      !current ||
+      current.role !== "host" ||
+      (this.locked && !this.installedService)
+    )
       throw new Error("没有可采集的会话");
+    if (this.installedService)
+      return {
+        sourceId: "screen:0:0",
+        session: current,
+        platform: process.platform,
+      };
     const displayId = current.displayId;
     const sources = await desktopCapturer.getSources({
       types: ["screen"],

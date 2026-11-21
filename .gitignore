@@ -47,6 +47,7 @@ NearLink-diagnostics*.json
 # Native build output and editor state
 *.node
 resources/update-launcher-*.exe
+resources/NearLinkService.exe
 *.ilk
 *.pch
 .vscode/

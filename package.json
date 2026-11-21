@@ -1,6 +1,6 @@
 {
   "name": "nearlink",
-  "version": "0.1.13",
+  "version": "0.1.16",
   "private": true,
   "description": "近控 NearLink — 局域网桌面远控与文件传输",
   "author": "NearLink",
@@ -10,11 +10,12 @@
     "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
     "native": "node scripts/build-native.mjs",
     "native:input-helper": "node scripts/build-input-helper.mjs",
+    "native:service": "node scripts/build-desktop-service.mjs",
     "start": "electron .",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "package:mac": "npm run build && node scripts/build-native.mjs --all-mac && node scripts/package.mjs mac",
-    "package:win": "npm run build && npm run native && npm run native:update-launcher && node scripts/package.mjs win",
+    "package:win": "npm run build && npm run native && npm run native:service && npm run native:update-launcher && node scripts/package.mjs win",
     "package:source": "node scripts/package-source.mjs",
     "release:manifest": "node scripts/make-update.mjs",
     "release:publish": "node scripts/publish-release.mjs",
@@ -64,7 +65,9 @@
       "**/*.node",
       "dist-electron/input-worker.cjs",
       "dist-electron/capture-worker.cjs",
-      "resources/update-launcher-win-x64.exe"
+      "resources/update-launcher-win-x64.exe",
+      "resources/NearLinkService.exe",
+      "resources/install-desktop-service.ps1"
     ],
     "npmRebuild": false,
     "mac": {

@@ -272,16 +272,18 @@ static NativeInputOutcome applyNativeInput(const NativeInputCommand& command) {
 }
 #ifndef NEARLINK_STANDALONE_INPUT
 #include "windows-input-bridge.h"
+#include "windows-service-client.h"
 static napi_value Input(napi_env env, napi_callback_info info) {
   size_t argc=1; napi_value args[1]; napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
   if(!argc) return JSBool(env,false);
   NativeInputCommand command; auto v=args[0]; command.type=Str(env,v,"type");
+  command.desktopEpoch=uint32_t(Num(env,v,"desktopEpoch"));
   if(command.type=="move"||command.type=="button") {command.screenX=LONG(Num(env,v,"screenX"));command.screenY=LONG(Num(env,v,"screenY"));}
   if(command.type=="button") {command.button=int(Num(env,v,"button"));command.down=Bool(env,v,"down");}
   if(command.type=="wheel") {command.dx=Num(env,v,"dx");command.dy=Num(env,v,"dy");}
   if(command.type=="key") {command.code=Str(env,v,"code");command.down=Bool(env,v,"down");}
   if(command.type=="text") command.text=Str(env,v,"text");
-  auto result=helperBridge.engaged() ? helperBridge.input(command) : applyNativeInput(command);
+  auto result=desktopServiceClient.engaged() ? desktopServiceClient.input(command) : helperBridge.engaged() ? helperBridge.input(command) : applyNativeInput(command);
   switch(result) {
     case NativeInputOutcome::applied:return JSBool(env,true);
     case NativeInputOutcome::alreadyUp:return inputOutcome(env,"already-up");
@@ -292,7 +294,7 @@ static napi_value Input(napi_env env, napi_callback_info info) {
     default:return JSBool(env,false);
   }
 }
-static void Cleanup(void*){if(helperStarting){helperBridge.cancel();return;}helperBridge.stop();release();}
+static void Cleanup(void*){desktopServiceClient.stop();if(helperStarting){helperBridge.cancel();return;}helperBridge.stop();release();}
 static void initKeys() {
   for (char c = 'A'; c <= 'Z'; ++c) keyMap[std::string("Key") + c] = c;
   for (char c = '0'; c <= '9'; ++c) {
@@ -305,6 +307,13 @@ static napi_value Init(napi_env env, napi_value exports) {
   initKeys();
   const napi_property_descriptor properties[] = {
     {"input", 0, Input, 0, 0, 0, napi_default, 0},
+    {"beginDesktopService",0,BeginDesktopService,0,0,0,napi_default,0},
+    {"authenticateDesktopService",0,AuthenticateDesktopService,0,0,0,napi_default,0},
+    {"configureDesktopService",0,ConfigureDesktopService,0,0,0,napi_default,0},
+    {"heartbeatDesktopService",0,HeartbeatDesktopService,0,0,0,napi_default,0},
+    {"stopDesktopService",0,StopDesktopService,0,0,0,napi_default,0},
+    {"desktopServiceStatus",0,DesktopServiceStatus,0,0,0,napi_default,0},
+    {"desktopServiceDiagnostics",0,DesktopServiceDiagnostics,0,0,0,napi_default,0},
     {"startInputHelper",0,StartInputHelper,0,0,0,napi_default,0},
     {"configureInputHelper",0,ConfigureInputHelper,0,0,0,napi_default,0},
     {"heartbeatInputHelper",0,HeartbeatInputHelper,0,0,0,napi_default,0},

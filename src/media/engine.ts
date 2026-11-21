@@ -61,9 +61,11 @@ export class ChromiumMediaEngine implements MediaEngine {
   private stream: MediaStream | null = null;
   private captureModes = new WeakMap<
     MediaStreamTrack,
-    { backend: "chromium" | "dxgi"; fps: number; fallback: boolean }
+    { backend: "chromium" | "dxgi" | "service"; fps: number; fallback: boolean }
   >();
   private dxgiFailed = false;
+  private desktopEpoch = 0;
+  private announcedDesktopEpoch = 0;
   private hostLocked = false;
   private received = new MediaStream();
   private receivedAudio = new MediaStream();
@@ -289,6 +291,17 @@ export class ChromiumMediaEngine implements MediaEngine {
       this.control.onmessage = (event) => {
         try {
           const m = JSON.parse(event.data);
+          if (
+            m.type === "desktop-epoch" &&
+            Number.isSafeInteger(m.epoch) &&
+            m.epoch > 0 &&
+            m.epoch <= 0xffffffff
+          ) {
+            if (this.desktopEpoch !== m.epoch) {
+              this.motionSender.clear();
+              this.desktopEpoch = m.epoch;
+            }
+          }
           if (m.type === "input-capabilities" && m.v === 1) {
             this.inputProbesSupported = true;
             this.appliedFeedbackSupported = m.applied === true;
@@ -369,6 +382,8 @@ export class ChromiumMediaEngine implements MediaEngine {
           return;
         }
         if (e.channel.label === "control") {
+          this.control = e.channel;
+          this.announcedDesktopEpoch = 0;
           feedbackChannel = e.channel;
           const advertise = () =>
             e.channel.send(
@@ -383,6 +398,7 @@ export class ChromiumMediaEngine implements MediaEngine {
           else e.channel.onopen = advertise;
           e.channel.onclose = () => {
             if (this.pc !== pc || feedbackChannel !== e.channel) return;
+            this.control = null;
             this.inputReceiver?.stop();
             void window.nearlink
               .invoke("media.input.stop", info.id)
@@ -629,6 +645,42 @@ export class ChromiumMediaEngine implements MediaEngine {
         },
       );
     let stream: MediaStream;
+    if (source.captureBackend === "service") {
+      const nativeTrack = await dxgiTrack(
+        info.id,
+        fps,
+        abort.signal,
+        (track) => this.recoverDxgi(track),
+        (epoch) => this.announceDesktop(epoch),
+      );
+      nativeTrack.contentHint = "motion";
+      this.captureModes.set(nativeTrack, {
+        backend: "service",
+        fps,
+        fallback: false,
+      });
+      stream = new MediaStream([nativeTrack]);
+      // Keep system loopback when Chromium can acquire it. Its video is never
+      // used; a secure-desktop capture failure cannot prevent service video.
+      try {
+        const audio = await captureTask(
+          navigator.mediaDevices.getUserMedia({
+            video: video as any,
+            audio: { mandatory: { chromeMediaSource: "desktop" } } as any,
+          }),
+          abort.signal,
+          1500,
+          (late) => {
+            for (const track of late.getTracks()) track.stop();
+          },
+        );
+        for (const track of audio.getVideoTracks()) track.stop();
+        for (const track of audio.getAudioTracks()) stream.addTrack(track);
+      } catch {}
+      this.capturingStreams.add(stream);
+      this.trace("capture-ready");
+      return stream;
+    }
     this.trace("capture-requested");
     try {
       stream = await acquire({
@@ -846,8 +898,19 @@ export class ChromiumMediaEngine implements MediaEngine {
       this.error(e);
     }
   }
+  private announceDesktop(epoch: number) {
+    if (
+      this.control?.readyState === "open" &&
+      this.announcedDesktopEpoch !== epoch
+    ) {
+      this.control.send(JSON.stringify({ type: "desktop-epoch", epoch }));
+      this.announcedDesktopEpoch = epoch;
+    }
+  }
   input(event: InputEvent) {
     if (!this.info || this.info.viewOnly) return;
+    if (this.desktopEpoch)
+      event = { ...event, desktopEpoch: this.desktopEpoch };
     if (event.type === "move") {
       if (this.control?.readyState !== "open") return;
       this.motionSender.push({
@@ -1241,6 +1304,8 @@ export class ChromiumMediaEngine implements MediaEngine {
     this.latest = null;
     this.remoteMetrics = null;
     this.dxgiFailed = false;
+    this.desktopEpoch = 0;
+    this.announcedDesktopEpoch = 0;
     this.hostLocked = false;
     this.renderFrames = 0;
     this.renderAt = 0;

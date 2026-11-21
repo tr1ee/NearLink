@@ -5,6 +5,7 @@ export function startWindowsCapture(
   contents: WebContents,
   token: string,
   center: { x: number; y: number },
+  mapping?: string,
 ) {
   const unpacked = __dirname.replace(/\.asar([\\/])/, ".asar.unpacked$1");
   const child = utilityProcess.fork(
@@ -37,6 +38,7 @@ export function startWindowsCapture(
       child.postMessage(
         {
           center,
+          mapping,
           nativePath: path.join(
             unpacked,
             "../native/prebuilds/win32-x64/nearlink-capture.node",

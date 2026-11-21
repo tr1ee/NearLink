@@ -8,6 +8,7 @@ export async function dxgiTrack(
   fps: number,
   signal: AbortSignal,
   onFailure: (track: MediaStreamTrack) => void,
+  onDesktop?: (epoch: number, secure: boolean) => void,
 ) {
   const Generator = (
     window as Window & {
@@ -35,6 +36,7 @@ export async function dxgiTrack(
   const writer = track.writable.getWriter();
   const period = 1000 / fps;
   let due = performance.now();
+  let lastFrame = performance.now();
   const read = async () => {
     if (track.readyState === "ended") {
       closePort();
@@ -42,24 +44,38 @@ export async function dxgiTrack(
       return;
     }
     try {
-      const bytes = await window.nearlink.invoke<ArrayBuffer | undefined>(
-        "capture.dxgi.frame",
-        token,
-      );
+      const result = await window.nearlink.invoke<
+        | ArrayBuffer
+        | {
+            frame: ArrayBuffer;
+            width: number;
+            height: number;
+            epoch: number;
+            secure: boolean;
+          }
+        | undefined
+      >("capture.dxgi.frame", token);
+      const structured =
+        result && !(result instanceof ArrayBuffer) ? result : undefined;
+      const bytes = structured?.frame ?? (result as ArrayBuffer | undefined);
       if (bytes && !isEnded(track)) {
+        lastFrame = performance.now();
         const frame = new VideoFrame(bytes, {
           format: "BGRX",
-          codedWidth: 1920,
-          codedHeight: 1080,
+          codedWidth: structured?.width ?? 1920,
+          codedHeight: structured?.height ?? 1080,
           timestamp: Math.round(performance.now() * 1000),
         });
         try {
           await writer.write(frame);
+          if (structured) onDesktop?.(structured.epoch, structured.secure);
         } finally {
           frame.close();
         }
         due = Math.max(due + period, performance.now() - period);
       }
+      if (onDesktop && performance.now() - lastFrame > 5000)
+        throw Error("服务采集未更新");
       setTimeout(read, bytes ? Math.max(0, due - performance.now() - 4) : 2);
     } catch {
       const active = !isEnded(track);
