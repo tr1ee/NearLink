@@ -64,9 +64,11 @@ test("安装服务每次重连使用设备证明，观看租约不授予输入�
         const Service = (process as any).mainModule.require(
           options.moduleFile,
         ).WindowsInputService;
+        (globalThis as any).serviceProofReports = [];
         const service = ((globalThis as any).installedServiceTest = new Service(
           options.native,
-          () => {},
+          (event: string, details: unknown) =>
+            (globalThis as any).serviceProofReports.push({ event, details }),
           options.worker,
           undefined,
           async (authority: string, challenge: string) => {
@@ -75,6 +77,10 @@ test("安装服务每次重连使用设备证明，观看租约不授予输入�
               challenge !== "synthetic-bound-challenge"
             )
               throw Error("unexpected proof request");
+            if (authority === "service-fixture-3")
+              throw Error("服务认证与当前远控会话不符");
+            if (authority === "service-fixture-4")
+              return { certificate: "synthetic", proof: "invalid-proof" };
             return { certificate: "synthetic", proof: "synthetic-proof" };
           },
         ));
@@ -170,6 +176,56 @@ test("安装服务每次重连使用设备证明，观看租约不授予输入�
         (r) => r.type === "service-configure" && r.allowed === false,
       ),
     ).toBe(true);
+    for (const [authority, failure] of [
+      ["service-fixture-3", "service-peer-proof-failed"],
+      ["service-fixture-4", "service-native-authentication-failed"],
+    ]) {
+      await app.evaluate(
+        ({}, authority) =>
+          (globalThis as any).installedServiceTest.configure({
+            sessionId: "service-fixture",
+            authority,
+            allowed: true,
+            serviceActive: true,
+            display: { x: 0, y: 0, width: 1920, height: 1080 },
+          }),
+        authority,
+      );
+      await expect
+        .poll(() =>
+          app.evaluate(
+            () =>
+              (globalThis as any).installedServiceTest.status().helper.state,
+          ),
+        )
+        .toBe(failure);
+      const error = await app.evaluate(async () => {
+        try {
+          await (globalThis as any).installedServiceTest.waitForAuthorization(
+            "service-fixture",
+          );
+          return "unexpected success";
+        } catch (error: any) {
+          return error.message;
+        }
+      });
+      expect(error).toContain(failure);
+    }
+    expect(
+      await app.evaluate(() =>
+        (globalThis as any).serviceProofReports.filter(
+          (r: any) => r.event === "service-peer-proof-rejected",
+        ),
+      ),
+    ).toEqual([
+      {
+        event: "service-peer-proof-rejected",
+        details: { reason: "session-mismatch" },
+      },
+    ]);
+    expect(
+      (await records()).filter((r) => r.type === "service-auth"),
+    ).toHaveLength(3);
     await app.evaluate(async () =>
       (globalThis as any).installedServiceTest.stop(),
     );

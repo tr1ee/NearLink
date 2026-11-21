@@ -17,9 +17,18 @@ inline std::string digestBytes(const std::vector<BYTE>& bytes) {
 inline bool verifyProof(const std::string& certificate,const std::string& proof,
                         const std::string& fingerprint,const std::string& challenge) {
   const auto der=unhex(certificate,4096),signature=unhex(proof,64);
-  if(signature.size()!=64||digestBytes(der)!=fingerprint)return false;
+  if(signature.size()!=64)return false;
   PCCERT_CONTEXT cert=CertCreateCertificateContext(X509_ASN_ENCODING,der.data(),DWORD(der.size()));
-  if(!cert)return false;BCRYPT_KEY_HANDLE key=nullptr;
+  if(!cert)return false;
+  // IdentityStore pins SHA-256 of DER SubjectPublicKeyInfo, not of the entire
+  // certificate. Re-encode that same SPKI structure before checking the pin.
+  BYTE* spki=nullptr;DWORD spkiBytes=0;
+  bool pinned=CryptEncodeObjectEx(X509_ASN_ENCODING,X509_PUBLIC_KEY_INFO,
+    &cert->pCertInfo->SubjectPublicKeyInfo,CRYPT_ENCODE_ALLOC_FLAG,nullptr,&spki,&spkiBytes)!=FALSE;
+  pinned=pinned&&digestBytes(std::vector<BYTE>(spki,spki+spkiBytes))==fingerprint;
+  if(spki)LocalFree(spki);
+  if(!pinned){CertFreeCertificateContext(cert);return false;}
+  BCRYPT_KEY_HANDLE key=nullptr;
   bool valid=CryptImportPublicKeyInfoEx2(X509_ASN_ENCODING,&cert->pCertInfo->SubjectPublicKeyInfo,0,nullptr,&key)!=FALSE;
   CertFreeCertificateContext(cert);
   const auto digest=unhex(digestBytes(std::vector<BYTE>(challenge.begin(),challenge.end())),32);

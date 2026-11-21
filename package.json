@@ -1,6 +1,6 @@
 {
   "name": "nearlink",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "description": "近控 NearLink — 局域网桌面远控与文件传输",
   "author": "NearLink",

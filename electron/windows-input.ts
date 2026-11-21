@@ -79,14 +79,28 @@ export class WindowsInputService {
             return;
           this.report("service-peer-proof-requested");
           void this.authorizeService(authority, m.challenge).then(
-            (proof) =>
-              child.postMessage({ type: "service-proof", authority, proof }),
-            () =>
+            (proof) => {
+              this.report("service-peer-proof-received");
+              child.postMessage({ type: "service-proof", authority, proof });
+            },
+            (error) => {
+              const reasons: Record<string, string> = {
+                服务认证与当前远控会话不符: "session-mismatch",
+                无效服务认证请求: "invalid-challenge",
+                不支持此操作: "unsupported-peer",
+                服务授权会话已结束: "session-revoked",
+                请求超时: "peer-timeout",
+                设备未连接: "peer-disconnected",
+              };
+              this.report("service-peer-proof-rejected", {
+                reason: reasons[error?.message] || "peer-rejected",
+              });
               child.postMessage({
                 type: "service-proof",
                 authority,
                 error: "对端需要同步支持安装式服务认证的版本",
-              }),
+              });
+            },
           );
         } else if (m?.type === "helper-status") {
           this.serviceMapping =
@@ -162,6 +176,15 @@ export class WindowsInputService {
         throw Error("本机输入授权尚未完成，请在 Windows 本机处理授权。");
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    if (
+      this.authorizeService &&
+      this.scope?.sessionId === sessionId &&
+      this.scope.serviceActive &&
+      !this.helper.active
+    )
+      throw Error(
+        `Windows 桌面服务授权失败 (${this.helper.state || "not-ready"})`,
+      );
   }
   async stop() {
     this.configure(null);

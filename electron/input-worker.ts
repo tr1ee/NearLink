@@ -55,12 +55,14 @@ async function configureService(scope: InputScope | null) {
     pendingApproval = true;
     attemptedAuthority = scope.authority;
     helperStatus(false, "awaiting-peer-proof");
+    let stage = "service-connect-failed";
     try {
       const challenge = native.beginDesktopService({
         authority: scope.authority,
         allowed: scope.allowed,
       });
       if (typeof challenge !== "string") throw Error("服务不可用或安装不匹配");
+      stage = "service-peer-proof-failed";
       const proof = await new Promise<any>((resolve, reject) => {
         proofReply = { authority: scope.authority!, resolve, reject };
         parent.postMessage({
@@ -69,6 +71,7 @@ async function configureService(scope: InputScope | null) {
           challenge,
         });
       });
+      stage = "service-native-authentication-failed";
       if (
         latestScope?.authority !== scope.authority ||
         !latestScope?.serviceActive ||
@@ -79,7 +82,7 @@ async function configureService(scope: InputScope | null) {
       helperStatus(true, "service-ready");
     } catch {
       native.stopDesktopService();
-      helperStatus(false, "service-authentication-failed");
+      helperStatus(false, stage);
     } finally {
       pendingApproval = false;
       proofReply = undefined;
@@ -199,6 +202,14 @@ async function configureScope(scope: InputScope | null) {
 
 function flushMouseDiagnostics() {
   try {
+    if (!pendingApproval && serviceAuthority && native.desktopServiceDiagnostics) {
+      const sample = native.desktopServiceDiagnostics();
+      const key = JSON.stringify(sample);
+      if (key !== lastHelperDiagnostic) {
+        lastHelperDiagnostic = key;
+        parent.postMessage({ type: "helper-diagnostic", sample });
+      }
+    }
     if (!pendingApproval && helperAuthority && native.inputHelperDiagnostics) {
       const sample = native.inputHelperDiagnostics();
       const key = JSON.stringify(sample);

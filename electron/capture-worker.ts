@@ -2,6 +2,7 @@ export {};
 const parent = process.parentPort!;
 parent.once("message", ({ data, ports }) => {
   const port = ports[0];
+  const service = typeof data.mapping === "string" && !!data.mapping;
   try {
     const capture = require(data.nativePath) as {
       open(center: { x: number; y: number }): boolean;
@@ -10,7 +11,7 @@ parent.once("message", ({ data, ports }) => {
       readService(): unknown;
     };
     if (
-      !(data.mapping
+      !(service
         ? capture.openService({ mapping: data.mapping })
         : capture.open(data.center))
     )
@@ -19,7 +20,7 @@ parent.once("message", ({ data, ports }) => {
       if (data !== "frame") return;
       try {
         port.postMessage({
-          frame: data.mapping ? capture.readService() : capture.read(),
+          frame: service ? capture.readService() : capture.read(),
         });
       } catch {
         port.postMessage({ error: true });

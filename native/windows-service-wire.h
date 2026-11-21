@@ -4,7 +4,7 @@
 #include <algorithm>
 
 namespace desktopservice {
-constexpr uint32_t magic=0x32534c4e, version=1;
+constexpr uint32_t magic=0x32534c4e, version=2;
 constexpr wchar_t pipeName[]=L"\\\\.\\pipe\\NearLinkDesktopService-v1";
 constexpr wchar_t serviceName[]=L"NearLinkDesktopService";
 constexpr uint32_t maxPixels=16*1024*1024;
@@ -25,6 +25,7 @@ struct Response {
   uint64_t sequence=0;
   NativeInputOutcome result=NativeInputOutcome::rejected;
   uint32_t desktopEpoch=0,agentPid=0;
+  uint32_t inputEpoch=0,inputStage=0,nativeRequested=0,nativeQueued=0,nativeError=0;
   char challenge[512]{};
   wchar_t mapping[128]{};
 };

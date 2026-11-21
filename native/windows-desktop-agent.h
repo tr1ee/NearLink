@@ -92,6 +92,7 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
   std::thread capture([&]{while(!state.stopped){const auto desktop=activeDesktop();if(state.granted&&!desktop.empty()){std::thread worker([&]{captureDesktop(state,desktop,session);});worker.join();}else Sleep(20);}});
   initKeys();uint64_t sequence=0;std::string authority;std::wstring inputDesktop;
   HDESK inputHandle=nullptr;bool closed=false;
+  uint32_t inputEpoch=0,inputStage=0,requested=0,queued=0,error=0;
   while(!closed&&WaitForSingleObject(owner.value,0)==WAIT_TIMEOUT) {
     if(state.granted&&(!activeSession(session)||GetTickCount64()-state.heartbeat.load()>inputwire::leaseMs)) {
       state.control=false;state.granted=false;release();
@@ -106,11 +107,16 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
     if(authority!=request.authority)break;
     const auto desktop=activeDesktop();state.epoch.observe(desktop);
     if(!desktop.empty()&&desktop!=inputDesktop) {
-      HDESK next=OpenDesktopW(desktop.c_str(),0,FALSE,DESKTOP_READOBJECTS|DESKTOP_WRITEOBJECTS);
+      // SetThreadDesktop binds the access granted to this handle. Read/write
+      // object access is sufficient for capture but can leave SendInput denied
+      // even under System. Request the input desktop's full existing grant;
+      // this does not change its DACL or the installed peer authorization.
+      HDESK next=OpenDesktopW(desktop.c_str(),0,FALSE,GENERIC_ALL);
       if(next&&SetThreadDesktop(next)){release();if(inputHandle)CloseDesktop(inputHandle);inputHandle=next;inputDesktop=desktop;}
       else if(next)CloseDesktop(next);
     }
     const bool active=!desktop.empty()&&desktop==inputDesktop&&activeSession(session);
+    if(request.operation==Operation::input){inputEpoch=request.desktopEpoch;inputStage=1;}
     if(request.operation==Operation::configure) {
       const int64_t right=int64_t(request.left)+request.width,bottom=int64_t(request.top)+request.height;
       RECT rectangle{request.left,request.top,LONG(right),LONG(bottom)};
@@ -127,15 +133,23 @@ inline int runAgent(const std::wstring& pipeName,DWORD servicePid,uint64_t creat
       if(request.operation==Operation::shutdown){state.control=false;state.granted=false;closed=true;}
     } else if(request.operation==Operation::input&&state.granted&&state.control&&active&&
               state.epoch.matches(request.desktopEpoch)) {
+      inputStage=2;
       NativeInputCommand command;const auto& p=request.input;
       const bool validInput=inputwire::validPacket(p,inputwire::headerBytes+p.textBytes,p.sequence-1);
       if(validInput&&inputwire::decode(p,command)) {
         RECT layout;{std::lock_guard<std::mutex> guard(state.layoutMutex);layout=state.layout;}
         const bool point=command.type=="move"||command.type=="button";
-        if(!point||PtInRect(&layout,{command.screenX,command.screenY}))reply.result=applyNativeInput(command);
+        inputStage=3;
+        if(!point||PtInRect(&layout,{command.screenX,command.screenY})) {
+          inputStage=4;lastNativeRequested=lastNativeQueued=lastNativeError=0;
+          reply.result=applyNativeInput(command);
+          requested=lastNativeRequested;queued=lastNativeQueued;error=lastNativeError;
+        }
       }
     }
     reply.desktopEpoch=state.epoch.current();reply.agentPid=GetCurrentProcessId();
+    reply.inputEpoch=inputEpoch;reply.inputStage=inputStage;
+    reply.nativeRequested=requested;reply.nativeQueued=queued;reply.nativeError=error;
     if(!inputwire::io(pipe.value,true,&reply,sizeof(reply),count)||count!=sizeof(reply))break;
     mouseLogSize=mouseLogDropped=0;
   }

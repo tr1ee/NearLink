@@ -23,6 +23,7 @@ class DesktopServiceClient {
   bool engaged() const{return engaged_;}
   DWORD pid() const{return engaged_?last_.agentPid:0;}
   const wchar_t* mapping() const{return engaged_?last_.mapping:L"";}
+  const desktopservice::Response& diagnostic() const{return last_;}
   std::string begin(const std::string& authority,bool control) {
     if(!inputsecurity::authorityValid(authority)||engaged_)return {};
     pipe_.reset(CreateFileW(desktopservice::pipeName,GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,
@@ -112,4 +113,10 @@ static napi_value DesktopServiceStatus(napi_env env,napi_callback_info) {
   SetNum(env,result,"pid",desktopServiceClient.pid());
   napi_create_string_utf16(env,reinterpret_cast<const char16_t*>(desktopServiceClient.mapping()),NAPI_AUTO_LENGTH,&mapping);
   napi_set_named_property(env,result,"mapping",mapping);return result;
+}
+static napi_value DesktopServiceDiagnostics(napi_env env,napi_callback_info) {
+  napi_value result;napi_create_object(env,&result);const auto& d=desktopServiceClient.diagnostic();
+  SetNum(env,result,"epoch",d.desktopEpoch);SetNum(env,result,"receivedEpoch",d.inputEpoch);
+  SetNum(env,result,"stage",d.inputStage);SetNum(env,result,"requested",d.nativeRequested);
+  SetNum(env,result,"queued",d.nativeQueued);SetNum(env,result,"error",d.nativeError);return result;
 }

@@ -313,6 +313,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     {"heartbeatDesktopService",0,HeartbeatDesktopService,0,0,0,napi_default,0},
     {"stopDesktopService",0,StopDesktopService,0,0,0,napi_default,0},
     {"desktopServiceStatus",0,DesktopServiceStatus,0,0,0,napi_default,0},
+    {"desktopServiceDiagnostics",0,DesktopServiceDiagnostics,0,0,0,napi_default,0},
     {"startInputHelper",0,StartInputHelper,0,0,0,napi_default,0},
     {"configureInputHelper",0,ConfigureInputHelper,0,0,0,napi_default,0},
     {"heartbeatInputHelper",0,HeartbeatInputHelper,0,0,0,napi_default,0},

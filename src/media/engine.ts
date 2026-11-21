@@ -382,6 +382,8 @@ export class ChromiumMediaEngine implements MediaEngine {
           return;
         }
         if (e.channel.label === "control") {
+          this.control = e.channel;
+          this.announcedDesktopEpoch = 0;
           feedbackChannel = e.channel;
           const advertise = () =>
             e.channel.send(
@@ -396,6 +398,7 @@ export class ChromiumMediaEngine implements MediaEngine {
           else e.channel.onopen = advertise;
           e.channel.onclose = () => {
             if (this.pc !== pc || feedbackChannel !== e.channel) return;
+            this.control = null;
             this.inputReceiver?.stop();
             void window.nearlink
               .invoke("media.input.stop", info.id)
@@ -648,15 +651,7 @@ export class ChromiumMediaEngine implements MediaEngine {
         fps,
         abort.signal,
         (track) => this.recoverDxgi(track),
-        (epoch) => {
-          if (
-            this.control?.readyState === "open" &&
-            this.announcedDesktopEpoch !== epoch
-          ) {
-            this.control.send(JSON.stringify({ type: "desktop-epoch", epoch }));
-            this.announcedDesktopEpoch = epoch;
-          }
-        },
+        (epoch) => this.announceDesktop(epoch),
       );
       nativeTrack.contentHint = "motion";
       this.captureModes.set(nativeTrack, {
@@ -901,6 +896,15 @@ export class ChromiumMediaEngine implements MediaEngine {
       await this.videoSender.setParameters(p);
     } catch (e) {
       this.error(e);
+    }
+  }
+  private announceDesktop(epoch: number) {
+    if (
+      this.control?.readyState === "open" &&
+      this.announcedDesktopEpoch !== epoch
+    ) {
+      this.control.send(JSON.stringify({ type: "desktop-epoch", epoch }));
+      this.announcedDesktopEpoch = epoch;
     }
   }
   input(event: InputEvent) {

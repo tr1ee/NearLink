@@ -34,6 +34,9 @@ int wmain(int argc,wchar_t** argv) {
   assert(std::getline(input,cert)&&std::getline(input,proof)&&std::getline(input,peer));
   std::ostringstream text;text<<input.rdbuf();auto challenge=text.str();
   assert(verifyProof(cert,proof,peer,challenge));
+  // Pinning the whole certificate was previously accepted by a self-consistent
+  // fixture but disagreed with NearLink's production SPKI device identity.
+  assert(!verifyProof(cert,proof,digestBytes(unhex(cert,4096)),challenge));
   assert(!verifyProof(cert,proof,peer,challenge+"changed"));
   assert(!verifyProof(cert,proof,std::string(64,'0'),challenge));
   proof[0]=proof[0]=='a'?'b':'a';assert(!verifyProof(cert,proof,peer,challenge));

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { IdentityStore } from "./identity";
+import { fingerprint } from "./identity-crypto";
 
 const run = promisify(execFile);
 const { readdir, lstat, readFile, mkdir, writeFile } = updateDisk;
@@ -13,6 +14,9 @@ export async function prepareDesktopServiceInstall(
   profile = app.getPath("userData"),
 ) {
   if (process.platform !== "win32") throw Error("仅支持 Windows");
+  const host = fingerprint(store.identity.cert);
+  if (host !== store.identity.fingerprint)
+    throw Error("本机设备指纹与证书公钥不一致，已取消服务安装。");
   const peers = [...store.trusted.keys()];
   if (!peers.length) throw Error("请先核对指纹并配对需要无人值守的控制端。");
   if (peers.length > 16) throw Error("服务目前最多批准 16 台已配对设备。");
@@ -77,7 +81,7 @@ export async function prepareDesktopServiceInstall(
     JSON.stringify({
       version: 1,
       userSid,
-      host: store.identity.fingerprint,
+      host,
       peers,
       profile,
       files,

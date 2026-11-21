@@ -4,6 +4,7 @@ import { webcrypto, createPrivateKey, createHash, verify } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { X509CertificateGenerator, cryptoProvider } from "@peculiar/x509";
 import { desktopServiceProof } from "../electron/service-proof";
+import { fingerprint } from "../electron/identity-crypto";
 import type { Identity } from "../electron/identity";
 import type { SessionInfo } from "../src/shared/protocol";
 
@@ -32,9 +33,12 @@ test("服务证明绑定实际控制端会话、主机及权限，输出 Windows
   })
     .export({ format: "pem", type: "pkcs8" })
     .toString();
-  const fp = createHash("sha256")
-    .update(Buffer.from(certificate.rawData))
-    .digest("hex");
+  const fp = fingerprint(cert);
+  assert.notEqual(
+    fp,
+    createHash("sha256").update(Buffer.from(certificate.rawData)).digest("hex"),
+    "设备指纹必须使用既有 SPKI 定义，不能误用整张证书摘要",
+  );
   const identity = {
     id: fp,
     fingerprint: fp,
