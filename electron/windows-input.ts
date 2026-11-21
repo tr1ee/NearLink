@@ -1,0 +1,102 @@
+import {
+  utilityProcess,
+  MessageChannelMain,
+  type WebContents,
+  type UtilityProcess,
+} from "electron";
+import path from "node:path";
+import type { InputScope } from "./input-state";
+export class WindowsInputService {
+  private child?: UtilityProcess;
+  private scope: InputScope | null = null;
+  ready = false;
+  constructor(
+    private nativePath: string,
+    private report: (event: string, details?: any) => void = () => {},
+    private entry = path.join(__dirname, "input-worker.cjs"),
+  ) {}
+  start() {
+    return new Promise<void>((resolve, reject) => {
+      const child = (this.child = utilityProcess.fork(
+        this.entry.replace(/\.asar([\\/])/, ".asar.unpacked$1"),
+        [],
+        {
+          serviceName: "NearLink Windows Input",
+          stdio: "pipe",
+        },
+      ));
+      let startupError = "";
+      child.stderr?.on("data", (chunk) => {
+        startupError = (startupError + String(chunk)).slice(-1200);
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(Error("Windows输入后台进程启动超时"));
+      }, 10000);
+      child.once("spawn", () =>
+        child.postMessage({
+          type: "init",
+          nativePath: this.nativePath.replace(
+            /\.asar([\\/])/,
+            ".asar.unpacked$1",
+          ),
+        }),
+      );
+      child.on("message", (m) => {
+        if (m?.type === "ready") {
+          clearTimeout(timer);
+          this.ready = true;
+          this.report("ready", { pid: m.pid });
+          resolve();
+        } else if (m?.type === "failed") {
+          clearTimeout(timer);
+          child.kill();
+          reject(Error(m.message));
+        } else if (m?.type === "mouse-diagnostics" && Array.isArray(m.samples)) {
+          for (const sample of m.samples) this.report("mouse-gesture", sample);
+        }
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        this.ready = false;
+        this.report("exit", { exitCode: code });
+        reject(Error(`Windows输入后台进程已退出 (${code}) ${startupError}`));
+      });
+    });
+  }
+  configure(scope: InputScope | null) {
+    this.scope = scope;
+    if (this.ready) this.child?.postMessage({ type: "configure", scope });
+  }
+  attach(contents: WebContents) {
+    if (!this.ready || !this.child) throw Error("Windows输入后台进程尚未就绪");
+    const { port1, port2 } = new MessageChannelMain();
+    this.child.postMessage({ type: "attach" }, [port1]);
+    this.child.postMessage({ type: "configure", scope: this.scope });
+    contents.postMessage("nearlink:input-port", null, [port2]);
+    this.report("port-attached", { renderer: contents.id });
+  }
+  release() {
+    if (this.ready) this.child?.postMessage({ type: "release" });
+  }
+  status() {
+    return { ready: this.ready, pid: this.child?.pid };
+  }
+  async stop() {
+    this.configure(null);
+    const child = this.child;
+    if (!child || !this.ready) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve();
+      }, 1500);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.postMessage({ type: "shutdown" });
+    });
+    this.ready = false;
+  }
+}

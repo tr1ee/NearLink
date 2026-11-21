@@ -1,0 +1,104 @@
+{
+  "name": "nearlink",
+  "version": "0.1.13",
+  "private": true,
+  "description": "近控 NearLink — 局域网桌面远控与文件传输",
+  "author": "NearLink",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
+    "native": "node scripts/build-native.mjs",
+    "start": "electron .",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "package:mac": "npm run build && node scripts/build-native.mjs --all-mac && node scripts/package.mjs mac",
+    "package:win": "npm run build && npm run native && npm run native:update-launcher && node scripts/package.mjs win",
+    "package:source": "node scripts/package-source.mjs",
+    "release:manifest": "node scripts/make-update.mjs",
+    "release:publish": "node scripts/publish-release.mjs",
+    "native:update-launcher": "node scripts/build-update-launcher.mjs"
+  },
+  "dependencies": {
+    "@peculiar/x509": "^1.14.3",
+    "bonjour-service": "^1.3.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ws": "^8.18.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "45.4.1",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.28.2",
+    "node-api-headers": "^1.6.0",
+    "prettier": "^3.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  },
+  "build": {
+    "appId": "app.nearlink.desktop",
+    "productName": "NearLink",
+    "artifactName": "NearLink-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "work/package.noindex"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "resources/**",
+      "package.json",
+      "native/prebuilds/**/*"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "dist-electron/input-worker.cjs",
+      "dist-electron/capture-worker.cjs",
+      "resources/update-launcher-win-x64.exe"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "icon": "resources/icon.png",
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "minimumSystemVersion": "14.2",
+      "identity": null,
+      "extendInfo": {
+        "NSAudioCaptureUsageDescription": "将电脑声音传输到已配对的远控设备。",
+        "NSScreenCaptureUsageDescription": "将桌面画面传输到已配对的远控设备。",
+        "NSLocalNetworkUsageDescription": "发现和连接同一网络中的电脑。",
+        "NSBonjourServices": [
+          "_nearlink._tcp"
+        ]
+      }
+    },
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true
+    },
+    "afterPack": "scripts/after-pack.cjs"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}
