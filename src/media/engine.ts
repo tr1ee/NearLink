@@ -14,6 +14,7 @@ import { FrameTimings, InputFeedback } from "./feedback";
 import { captureSize } from "../shared/geometry";
 import { captureTask } from "./capture-task";
 import { dxgiTrack } from "./dxgi";
+import type { MediaStage } from "../shared/media-diagnostics";
 import workletUrl from "./pcm-worklet.js?url";
 export type Capabilities = {
   backend: "chromium-webrtc";
@@ -145,6 +146,7 @@ export class ChromiumMediaEngine implements MediaEngine {
           })
           .catch((e) => {
             if (epoch === this.signalEpoch && e?.name !== "AbortError") {
+              this.trace("signal-failed");
               this.error(e);
               if (e?.name === "TimeoutError" && this.info)
                 void window.nearlink
@@ -225,6 +227,12 @@ export class ChromiumMediaEngine implements MediaEngine {
     this.onState?.(message);
     void window.nearlink.invoke("media.error", message).catch(() => {});
   }
+  private trace(stage: MediaStage) {
+    if (this.info)
+      void window.nearlink
+        .invoke("diagnostics.media-stage", this.info.id, stage)
+        .catch(() => {});
+  }
   async start(info: SessionInfo) {
     if (
       this.info?.id === info.id &&
@@ -234,6 +242,7 @@ export class ChromiumMediaEngine implements MediaEngine {
       return;
     this.stop();
     this.info = info;
+    this.trace("engine-start");
     this.started = performance.now();
     this.adaptive = this.createAdaptive(info);
     const pc = (this.pc = new RTCPeerConnection({
@@ -246,6 +255,7 @@ export class ChromiumMediaEngine implements MediaEngine {
     };
     pc.onconnectionstatechange = () => {
       if (this.pc !== pc) return;
+      this.trace(`connection-${pc.connectionState}`);
       this.onState?.(pc.connectionState);
       if (pc.connectionState === "connected") {
         if (this.failureTimer) clearTimeout(this.failureTimer);
@@ -505,6 +515,7 @@ export class ChromiumMediaEngine implements MediaEngine {
       return;
     }
     if (signal.kind === "offer") {
+      this.trace("offer-received");
       if (
         pc.remoteDescription?.sdp === signal.data.sdp &&
         pc.localDescription?.type === "answer"
@@ -514,12 +525,14 @@ export class ChromiumMediaEngine implements MediaEngine {
       }
       await pc.setRemoteDescription(signal.data);
       if (this.pc !== pc) return;
+      this.trace("offer-description-ready");
       const captured = await this.capture();
       if (this.pc !== pc) {
         for (const track of captured.getTracks()) track.stop();
         return;
       }
       this.capturingStreams.delete(captured);
+      this.trace("capture-ready");
       this.stream = captured;
       for (const t of captured.getTracks()) {
         // Separate sync groups: remote interaction must not wait for an
@@ -534,13 +547,16 @@ export class ChromiumMediaEngine implements MediaEngine {
       if (this.pc !== pc) return;
       await pc.setLocalDescription(await pc.createAnswer());
       if (this.pc !== pc) return;
+      this.trace("answer-ready");
       this.send("answer", pc.localDescription?.toJSON());
       await this.applyEncoding();
       await this.flushCandidates();
       return;
     }
     if (signal.kind === "answer") {
+      this.trace("answer-received");
       await pc.setRemoteDescription(signal.data);
+      this.trace("answer-description-ready");
       await this.flushCandidates();
       return;
     }
@@ -567,6 +583,7 @@ export class ChromiumMediaEngine implements MediaEngine {
     const generation = this.generation;
     this.captureAbort?.abort();
     const abort = (this.captureAbort = new AbortController());
+    this.trace("source-requested");
     const source = await captureTask(
       window.nearlink.invoke("source"),
       abort.signal,
@@ -575,6 +592,7 @@ export class ChromiumMediaEngine implements MediaEngine {
     );
     if (generation !== this.generation)
       throw new DOMException("采集已取消", "AbortError");
+    this.trace("source-ready");
     const info: SessionInfo = source.session;
     const display = info.displays.find((d) => d.id === info.displayId)!;
     const q = this.adaptive?.current() ?? {
@@ -607,6 +625,7 @@ export class ChromiumMediaEngine implements MediaEngine {
         },
       );
     let stream: MediaStream;
+    this.trace("capture-requested");
     try {
       stream = await acquire({
         video: video as any,
@@ -618,6 +637,7 @@ export class ChromiumMediaEngine implements MediaEngine {
     } catch (e: any) {
       if (e?.name === "AbortError" || e?.name === "TimeoutError") throw e;
       if (source.platform === "win32") {
+        this.trace("capture-audio-fallback");
         stream = await acquire({
           video: video as any,
           audio: false,

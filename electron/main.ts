@@ -24,6 +24,7 @@ import { SessionLog } from "./session-log";
 import { interactiveVideoTrials } from "./media-policy";
 import { fitRemoteWindow } from "./remote-window";
 import { startWindowsCapture } from "./windows-capture";
+import { isMediaStage } from "../src/shared/media-diagnostics";
 app.setName("NearLink");
 if (process.env.NEARLINK_USER_DATA)
   app.setPath("userData", process.env.NEARLINK_USER_DATA);
@@ -380,6 +381,9 @@ async function initialize() {
   runtime = new Runtime();
   runtime.on("input-worker", (event, details) =>
     mediaEvent("input-worker", event, details),
+  );
+  runtime.on("media-signal-received", (signalKind: "offer" | "answer") =>
+    mediaEvent("network", "media-signal-received", { signalKind }),
   );
   await runtime.init();
   runtime.network.on("ready", () => mediaEvent("network", "authenticated"));
@@ -825,7 +829,12 @@ async function initialize() {
       }
       case "media.signal":
         if (!privilegedMedia) throw new Error("无效媒体入口");
-        return runtime.signal(args[0]);
+        runtime.signal(args[0]);
+        if (args[0]?.kind === "offer" || args[0]?.kind === "answer")
+          mediaEvent(meta.kind, "media-signal-sent", {
+            signalKind: args[0].kind,
+          });
+        return;
       case "media.codec-experiment":
         if (!privilegedMedia) throw Error("无效媒体入口");
         return app.commandLine.hasSwitch("nearlink-hevc") ? "hevc" : null;
@@ -840,6 +849,16 @@ async function initialize() {
       case "media.error":
         if (!privilegedMedia) throw new Error("无效媒体入口");
         runtime.mediaError(String(args[0]).slice(0, 500));
+        return true;
+      case "diagnostics.media-stage":
+        if (
+          !privilegedMedia ||
+          !runtime.session ||
+          runtime.session.id !== args[0] ||
+          !isMediaStage(args[1])
+        )
+          return false;
+        mediaEvent(meta.kind, "media-stage", { stage: args[1] });
         return true;
       case "media.input": {
         if (meta.kind !== "host") throw new Error("无效输入入口");

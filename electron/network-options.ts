@@ -2,8 +2,10 @@ export function runtimeNetworkOptions(
   directory: string,
   packaged: boolean,
   isolatedProfile: boolean,
+  allowDevLan = false,
 ) {
-  const isolated = !packaged && isolatedProfile;
+  // A separate identity stays local unless cross-device debugging is explicit.
+  const isolated = !packaged && isolatedProfile && !allowDevLan;
   return {
     stateDirectory: directory,
     discovery: !isolated,
