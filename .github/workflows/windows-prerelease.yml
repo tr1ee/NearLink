@@ -1,0 +1,36 @@
+name: Windows prerelease validation
+on:
+  push:
+    branches: [codex/windows-desktop-service]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Build native modules and installer
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VS_INSTALL=%%i"
+          call "%VS_INSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b %errorlevel%
+          call npm run package:win
+      - run: npm test
+      - run: npx playwright test tests/input-worker.spec.ts --reporter=list
+      - name: Validate actual installer in ephemeral runner
+        run: node scripts/validate-windows-prerelease.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows-prerelease
+          path: |
+            outputs/installers/*win-x64.exe
+            outputs/windows-real-install-validation-*.json
+          retention-days: 7

@@ -9,6 +9,175 @@ import {
 } from "node:fs/promises";
 import * as asar from "@electron/asar";
 import path from "node:path";
+
+test("安装服务每次重连使用设备证明，观看租约不授予输入，释放后可重新认证", async () => {
+  const root = await mkdtemp(path.resolve("work/service-worker-"));
+  const native = path.join(root, "native.cjs"),
+    events = path.join(root, "events.jsonl"),
+    moduleFile = path.join(root, "service.cjs");
+  await writeFile(
+    native,
+    `const fs=require('fs');const record=event=>fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(event)+'\\n');
+    exports.input=input=>{record(input);return true};
+    exports.beginDesktopService=scope=>{record({type:'service-begin',allowed:scope.allowed});return 'synthetic-bound-challenge'};
+    exports.authenticateDesktopService=proof=>{record({type:'service-auth'});return proof.proof==='synthetic-proof'};
+    exports.configureDesktopService=scope=>{record({type:'service-configure',allowed:scope.allowed});return true};
+    exports.heartbeatDesktopService=()=>{record({type:'service-heartbeat'});return true};
+    exports.stopDesktopService=()=>{record({type:'service-stop'});return true};
+    exports.desktopServiceStatus=()=>({pid:1234,mapping:'Global\\\\NearLinkFrame-'+ 'a'.repeat(64)});
+    exports.startInputHelper=()=>{throw Error('UAC helper must not be called')};`,
+  );
+  await build({
+    entryPoints: ["electron/windows-input.ts"],
+    outfile: moduleFile,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    external: ["electron"],
+  });
+  const app = await electron.launch({
+    args: [process.cwd(), "--background"],
+    env: {
+      ...process.env,
+      NEARLINK_USER_DATA: path.join(root, "profile"),
+      NEARLINK_DEV_ADMIN_INPUT: "0",
+      NEARLINK_INSTALLED_SERVICE: "0",
+      NEARLINK_DEV_LAN: "0",
+    },
+  });
+  const records = async () =>
+    (await readFile(events, "utf8").catch(() => ""))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  try {
+    await expect
+      .poll(() => app.windows().some((p) => p.url().includes("window=host")))
+      .toBe(true);
+    const host = app.windows().find((p) => p.url().includes("window=host"))!;
+    await expect
+      .poll(() => host.evaluate(() => typeof window.nearlink?.invoke))
+      .toBe("function");
+    await app.evaluate(
+      async ({ BrowserWindow }, options) => {
+        const Service = (process as any).mainModule.require(
+          options.moduleFile,
+        ).WindowsInputService;
+        const service = ((globalThis as any).installedServiceTest = new Service(
+          options.native,
+          () => {},
+          options.worker,
+          undefined,
+          async (authority: string, challenge: string) => {
+            if (
+              !authority.startsWith("service-fixture-") ||
+              challenge !== "synthetic-bound-challenge"
+            )
+              throw Error("unexpected proof request");
+            return { certificate: "synthetic", proof: "synthetic-proof" };
+          },
+        ));
+        await service.start();
+        service.attach(
+          BrowserWindow.getAllWindows().find((w) =>
+            w.webContents.getURL().includes("window=host"),
+          )!.webContents,
+        );
+        service.configure({
+          sessionId: "service-fixture",
+          authority: "service-fixture-1",
+          allowed: true,
+          serviceActive: true,
+          display: { x: 0, y: 0, width: 1920, height: 1080 },
+        });
+      },
+      {
+        moduleFile,
+        native,
+        worker: path.resolve("dist-electron/input-worker.cjs"),
+      },
+    );
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as any).installedServiceTest.status().helper.state,
+        ),
+      )
+      .toBe("service-ready");
+    expect(
+      await host.evaluate(() =>
+        window.nearlink.invoke("media.input", "service-fixture", {
+          type: "key",
+          code: "KeyA",
+          down: true,
+          desktopEpoch: 7,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      (await records()).some((r) => r.type === "key" && r.desktopEpoch === 7),
+    ).toBe(true);
+    await app.evaluate(() =>
+      (globalThis as any).installedServiceTest.configure(null),
+    );
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as any).installedServiceTest.status().helper.active,
+        ),
+      )
+      .toBe(false);
+    await app.evaluate(() =>
+      (globalThis as any).installedServiceTest.configure({
+        sessionId: "service-fixture",
+        authority: "service-fixture-2",
+        allowed: false,
+        serviceActive: true,
+        display: { x: 0, y: 0, width: 1920, height: 1080 },
+      }),
+    );
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as any).installedServiceTest.status().helper.state,
+        ),
+      )
+      .toBe("service-ready");
+    expect(
+      await host.evaluate(() =>
+        window.nearlink.invoke("media.input", "service-fixture", {
+          type: "key",
+          code: "KeyB",
+          down: true,
+          desktopEpoch: 8,
+        }),
+      ),
+    ).toBe(false);
+    await host.evaluate(() =>
+      window.nearlink.invoke("media.input.heartbeat", "service-fixture"),
+    );
+    await expect
+      .poll(async () =>
+        (await records()).some((r) => r.type === "service-heartbeat"),
+      )
+      .toBe(true);
+    expect(
+      (await records()).filter((r) => r.type === "service-auth"),
+    ).toHaveLength(2);
+    expect(
+      (await records()).some(
+        (r) => r.type === "service-configure" && r.allowed === false,
+      ),
+    ).toBe(true);
+    await app.evaluate(async () =>
+      (globalThis as any).installedServiceTest.stop(),
+    );
+  } finally {
+    await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
+    await app.close();
+  }
+});
 test("UI主线程停止调度时，生产预加载直连真实Utility进程仍执行鼠标抬起", async () => {
   test.setTimeout(45000);
   const root = await mkdtemp(path.resolve("work/input-worker-"));

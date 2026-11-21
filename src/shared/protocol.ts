@@ -98,7 +98,7 @@ export type Metrics = {
   width: number;
   height: number;
   captureFps: number;
-  captureBackend?: "chromium" | "dxgi";
+  captureBackend?: "chromium" | "dxgi" | "service";
   captureFallback?: boolean;
   targetFps?: number;
   configuredFps?: number;
@@ -179,39 +179,45 @@ export type InputButtonStats = {
   trayClicks?: number;
   deferredDowns?: number;
 };
-export const inputSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("move"),
-    x: z.number().min(0).max(1),
-    y: z.number().min(0).max(1),
-    seq: z.number().int().nonnegative(),
-    afterButton: z.number().int().nonnegative().optional(),
-  }),
-  z.object({
-    type: z.literal("button"),
-    seq: z.number().int().nonnegative().optional(),
-    button: z.number().int().min(0).max(2),
-    down: z.boolean(),
-    x: z.number().min(0).max(1),
-    y: z.number().min(0).max(1),
-  }),
-  z.object({
-    type: z.literal("wheel"),
-    dx: z.number().min(-2000).max(2000),
-    dy: z.number().min(-2000).max(2000),
-  }),
-  z.object({
-    type: z.literal("key"),
-    code: z.string().max(40),
-    down: z.boolean(),
-  }),
-  z.object({ type: z.literal("text"), text: z.string().max(4096) }),
-  z.object({ type: z.literal("paste") }),
-  z.object({
-    type: z.literal("release"),
-    seq: z.number().int().nonnegative().optional(),
-  }),
-]);
+export const inputSchema = z
+  .discriminatedUnion("type", [
+    z.object({
+      type: z.literal("move"),
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      seq: z.number().int().nonnegative(),
+      afterButton: z.number().int().nonnegative().optional(),
+    }),
+    z.object({
+      type: z.literal("button"),
+      seq: z.number().int().nonnegative().optional(),
+      button: z.number().int().min(0).max(2),
+      down: z.boolean(),
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+    }),
+    z.object({
+      type: z.literal("wheel"),
+      dx: z.number().min(-2000).max(2000),
+      dy: z.number().min(-2000).max(2000),
+    }),
+    z.object({
+      type: z.literal("key"),
+      code: z.string().max(40),
+      down: z.boolean(),
+    }),
+    z.object({ type: z.literal("text"), text: z.string().max(4096) }),
+    z.object({ type: z.literal("paste") }),
+    z.object({
+      type: z.literal("release"),
+      seq: z.number().int().nonnegative().optional(),
+    }),
+  ])
+  .and(
+    z.object({
+      desktopEpoch: z.number().int().min(1).max(0xffffffff).optional(),
+    }),
+  );
 export type InputEvent = z.infer<typeof inputSchema>;
 export type MediaSignal = {
   kind: "offer" | "answer" | "candidate" | "reconfigure" | "stop" | "stats";

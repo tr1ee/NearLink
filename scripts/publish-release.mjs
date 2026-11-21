@@ -13,6 +13,11 @@ const { repository } = JSON.parse(
   readFileSync("resources/update-config.json", "utf8"),
 );
 const tag = `v${version}`;
+if (execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim())
+  throw Error("Release source must be committed.");
+const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+  encoding: "utf8",
+}).trim();
 const repo = ["--repo", repository];
 const winInstaller = `outputs/installers/NearLink-${version}-win-x64.exe`;
 const notes = "outputs/发布说明.txt";
@@ -55,9 +60,26 @@ const win = JSON.parse(
 if (
   win.status !== "passed" ||
   win.version !== version ||
+  win.sourceCommit !== sourceCommit ||
   win.installerSha256 !== checksums.get(basename(winInstaller)).sha256
 )
   throw Error("Windows install validation must match this exact installer");
+const mac = JSON.parse(
+  readFileSync(`outputs/mac-build-validation-${version}.json`, "utf8"),
+);
+if (
+  mac.status !== "passed" ||
+  mac.version !== version ||
+  mac.sourceCommit !== sourceCommit
+)
+  throw Error("Mac build must match this source commit.");
+for (const [name, digest] of Object.entries(mac.hashes ?? {}))
+  if (checksums.get(name)?.sha256 !== digest)
+    throw Error(`Mac artifact digest differs: ${name}`);
+for (const arch of ["arm64", "x64"])
+  for (const ext of ["zip", "dmg"])
+    if (!mac.hashes?.[`NearLink-${version}-mac-${arch}.${ext}`])
+      throw Error("Mac architecture report incomplete.");
 
 function github(...params) {
   execFileSync("gh", ["release", ...params, ...repo], { stdio: "inherit" });
@@ -88,6 +110,17 @@ function verifyUploadedAssets(release) {
 }
 
 const existing = releaseInfo();
+if (existing) {
+  const remoteCommit = execFileSync(
+    "gh",
+    ["api", `repos/${repository}/commits/${tag}`, "--jq", ".sha"],
+    { encoding: "utf8" },
+  ).trim();
+  if (remoteCommit !== sourceCommit)
+    throw Error(
+      "Existing release tag points to different source; never overwrite it.",
+    );
+}
 if (stable) {
   if (!existing || existing.isDraft || !existing.isPrerelease)
     throw Error(`${tag} must be a published prerelease before promotion`);
@@ -110,6 +143,8 @@ if (stable) {
       "create",
       tag,
       "--draft",
+      "--target",
+      sourceCommit,
       "--title",
       `NearLink ${version}`,
       "--notes-file",

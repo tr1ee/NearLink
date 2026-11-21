@@ -8,6 +8,7 @@
 #include <memory>
 #include "win_napi_bridge.h"
 #include "common.h"
+#include "windows-service-frame.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -158,9 +159,11 @@ napi_value Init(napi_env env, napi_value exports) {
   const napi_property_descriptor properties[] = {
     {"open", nullptr, Open, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"read", nullptr, Read, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"openService",nullptr,OpenServiceFrame,nullptr,nullptr,nullptr,napi_default,nullptr},
+    {"readService",nullptr,ReadServiceFrame,nullptr,nullptr,nullptr,napi_default,nullptr},
   };
-  napi_define_properties(env, exports, 2, properties);
-  napi_add_env_cleanup_hook(env, [](void*) { capture.reset(); }, nullptr);
+  napi_define_properties(env, exports, ARRAYSIZE(properties), properties);
+  napi_add_env_cleanup_hook(env, [](void*) { capture.reset();serviceFrame.reset(); }, nullptr);
   return exports;
 }
 }

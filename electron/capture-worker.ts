@@ -6,13 +6,21 @@ parent.once("message", ({ data, ports }) => {
     const capture = require(data.nativePath) as {
       open(center: { x: number; y: number }): boolean;
       read(): ArrayBuffer | undefined;
+      openService(mapping: { mapping: string }): boolean;
+      readService(): unknown;
     };
-    if (!capture.open(data.center))
+    if (
+      !(data.mapping
+        ? capture.openService({ mapping: data.mapping })
+        : capture.open(data.center))
+    )
       throw Error("无法开启当前显示器的 DXGI 采集");
     port.on("message", ({ data }) => {
       if (data !== "frame") return;
       try {
-        port.postMessage({ frame: capture.read() });
+        port.postMessage({
+          frame: data.mapping ? capture.readService() : capture.read(),
+        });
       } catch {
         port.postMessage({ error: true });
         port.close();

@@ -15,11 +15,16 @@ export class WindowsInputService {
     active: false,
   };
   private handledAuthority?: string;
+  private serviceMapping?: string;
   constructor(
     private nativePath: string,
     private report: (event: string, details?: any) => void = () => {},
     private entry = path.join(__dirname, "input-worker.cjs"),
     private developmentHelper?: DevelopmentInputHelper,
+    private authorizeService?: (
+      authority: string,
+      challenge: string,
+    ) => Promise<{ certificate: string; proof: string }>,
   ) {}
   start() {
     return new Promise<void>((resolve, reject) => {
@@ -48,6 +53,7 @@ export class WindowsInputService {
             ".asar.unpacked$1",
           ),
           helper: this.developmentHelper,
+          installedService: !!this.authorizeService,
         }),
       );
       child.on("message", (m) => {
@@ -60,13 +66,40 @@ export class WindowsInputService {
           clearTimeout(timer);
           child.kill();
           reject(Error(m.message));
+        } else if (
+          m?.type === "service-proof-request" &&
+          this.authorizeService
+        ) {
+          const authority = m.authority;
+          if (
+            typeof authority !== "string" ||
+            typeof m.challenge !== "string" ||
+            m.challenge.length > 511
+          )
+            return;
+          void this.authorizeService(authority, m.challenge).then(
+            (proof) =>
+              child.postMessage({ type: "service-proof", authority, proof }),
+            () =>
+              child.postMessage({
+                type: "service-proof",
+                authority,
+                error: "对端需要同步支持安装式服务认证的版本",
+              }),
+          );
         } else if (m?.type === "helper-status") {
+          this.serviceMapping =
+            m.active && typeof m.mapping === "string" ? m.mapping : undefined;
           this.helper = {
             active: m.active === true,
             pid: m.pid,
             state: m.state,
           };
-          if (m.state !== "awaiting-local-approval")
+          if (
+            !["awaiting-local-approval", "awaiting-peer-proof"].includes(
+              m.state,
+            )
+          )
             this.handledAuthority = m.authority;
           this.report("helper-status", this.helper);
         } else if (m?.type === "helper-diagnostic") {
@@ -104,11 +137,22 @@ export class WindowsInputService {
   status() {
     return { ready: this.ready, pid: this.child?.pid, helper: this.helper };
   }
+  captureMapping(sessionId: string) {
+    if (
+      !this.authorizeService ||
+      this.scope?.sessionId !== sessionId ||
+      !this.scope.serviceActive ||
+      !this.helper.active ||
+      !this.serviceMapping
+    )
+      throw Error("服务采集授权尚未就绪");
+    return this.serviceMapping;
+  }
   async waitForAuthorization(sessionId: string) {
     const deadline = Date.now() + 180000;
     while (
-      this.developmentHelper &&
-      this.scope?.allowed &&
+      (this.developmentHelper || this.authorizeService) &&
+      (this.scope?.allowed || this.scope?.serviceActive) &&
       this.scope.sessionId === sessionId &&
       this.scope.authority &&
       this.handledAuthority !== this.scope.authority
